@@ -885,6 +885,12 @@ variable "instance_termination_watcher" {
   default = {}
 }
 
+variable "runners_ebs_optimized" {
+  description = "Enable EBS optimization for the runner instances."
+  type        = bool
+  default     = false
+}
+
 variable "lambda_tags" {
   description = "Map of tags that will be added to all the lambda function resources. Note these are additional tags to the default tags."
   type        = map(string)
