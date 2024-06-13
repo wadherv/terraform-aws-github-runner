@@ -1,1 +1,0 @@
---8<-- "examples/prebuilt/README.md"

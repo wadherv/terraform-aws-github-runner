@@ -1,7 +1,7 @@
 locals {
   webhook_endpoint = "webhook"
   role_path        = var.role_path == null ? "/${var.prefix}/" : var.role_path
-  lambda_zip       = var.lambda_zip == null ? "${path.module}/../../lambdas/functions/webhook/webhook.zip" : var.lambda_zip
+  lambda_zip       = var.lambda_zip == null ? "${path.module}/lambdas/webhook/webhook.zip" : var.lambda_zip
 }
 
 resource "aws_apigatewayv2_api" "webhook" {
@@ -19,9 +19,9 @@ resource "aws_apigatewayv2_route" "webhook" {
 resource "aws_apigatewayv2_stage" "webhook" {
   lifecycle {
     ignore_changes = [
-      # see bug https://github.com/terraform-providers/terraform-provider-aws/issues/12893
+      // see bug https://github.com/terraform-providers/terraform-provider-aws/issues/12893
       default_route_settings,
-      # not terraform managed
+      // not terraform managed
       deployment_id
     ]
   }
@@ -42,7 +42,7 @@ resource "aws_apigatewayv2_stage" "webhook" {
 resource "aws_apigatewayv2_integration" "webhook" {
   lifecycle {
     ignore_changes = [
-      # not terraform managed
+      // not terraform managed
       passthrough_behavior
     ]
   }
@@ -54,11 +54,4 @@ resource "aws_apigatewayv2_integration" "webhook" {
   description        = "GitHub App webhook for receiving build events."
   integration_method = "POST"
   integration_uri    = aws_lambda_function.webhook.invoke_arn
-}
-
-
-resource "aws_ssm_parameter" "runner_matcher_config" {
-  name  = "${var.ssm_paths.root}/${var.ssm_paths.webhook}/runner-matcher-config"
-  type  = "String"
-  value = jsonencode(local.runner_matcher_config_sorted)
 }

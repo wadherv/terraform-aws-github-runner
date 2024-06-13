@@ -1,6 +1,6 @@
 locals {
   environment = var.environment != null ? var.environment : "default"
-  aws_region  = var.aws_region
+  aws_region  = "eu-west-1"
 }
 
 resource "random_id" "random" {
@@ -48,7 +48,7 @@ module "runners" {
   # runners_lambda_zip                = "../lambdas-download/runners.zip"
 
   enable_organization_runners = true
-  runner_extra_labels         = ["default", "example"]
+  runner_extra_labels         = "default,example"
 
   # enable access to the runners via SSM
   enable_ssm_on_runners = true
@@ -61,9 +61,6 @@ module "runners" {
   #     }
   #   }
   # }
-
-  # enable S3 versioning for runners S3 bucket
-  # runner_binaries_s3_versioning = "Enabled"
 
   # Uncommet idle config to have idle runners from 9 to 5 in time zone Amsterdam
   # idle_config = [{
@@ -79,7 +76,7 @@ module "runners" {
 
   # override delay of events in seconds
   delay_webhook_event   = 5
-  runners_maximum_count = 2
+  runners_maximum_count = 1
 
   # set up a fifo queue to remain order
   enable_fifo_build_queue = true
@@ -96,36 +93,4 @@ module "runners" {
 
   # Enable debug logging for the lambda functions
   # log_level = "debug"
-
-  enable_ami_housekeeper = true
-  ami_housekeeper_cleanup_config = {
-    ssmParameterNames = ["*/ami-id"]
-    minimumDaysOld    = 10
-    amiFilters = [
-      {
-        Name   = "name"
-        Values = ["*al2023*"]
-      }
-    ]
-  }
-
-  instance_termination_watcher = {
-    enable = true
-    enable_metric = {
-      spot_warning = true
-    }
-  }
-
-}
-
-module "webhook_github_app" {
-  source     = "../../modules/webhook-github-app"
-  depends_on = [module.runners]
-
-  github_app = {
-    key_base64     = var.github_app.key_base64
-    id             = var.github_app.id
-    webhook_secret = random_id.random.hex
-  }
-  webhook_endpoint = module.runners.webhook.endpoint
 }

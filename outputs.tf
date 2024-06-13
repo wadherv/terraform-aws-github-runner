@@ -15,7 +15,7 @@ output "runners" {
     role_scale_down         = module.runners.role_scale_down
     role_pool               = module.runners.role_pool
     runners_log_groups      = module.runners.runners_log_groups
-    labels                  = local.runner_labels
+    labels                  = sort(split(",", local.runner_labels))
     logfiles                = module.runners.logfiles
   }
 }
@@ -50,14 +50,6 @@ output "queues" {
   value = {
     build_queue_arn            = aws_sqs_queue.queued_builds.arn
     build_queue_dlq_arn        = var.redrive_build_queue.enabled ? aws_sqs_queue.queued_builds_dlq[0].arn : null
-    webhook_workflow_job_queue = try(aws_sqs_queue.webhook_events_workflow_job_queue[*].arn, "")
+    webhook_workflow_job_queue = try(aws_sqs_queue.webhook_events_workflow_job_queue[0], null) != null ? aws_sqs_queue.webhook_events_workflow_job_queue[0].arn : ""
   }
-}
-
-output "instance_termination_watcher" {
-  value = var.instance_termination_watcher.enable ? {
-    lambda           = module.instance_termination_watcher[0].lambda.function
-    lambda_log_group = module.instance_termination_watcher[0].lambda.log_group
-    lambda_role      = module.instance_termination_watcher[0].lambda.role
-  } : null
 }

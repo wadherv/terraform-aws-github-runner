@@ -1,1 +1,0 @@
---8<-- "examples/lambdas-download/README.md"

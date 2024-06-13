@@ -1,12 +1,3 @@
-locals {
-  # config with combined key and order
-  runner_matcher_config = { for k, v in var.runner_matcher_config : format("%03d-%s", v.matcherConfig.priority, k) => merge(v, { key = k }) }
-
-  # sorted list
-  runner_matcher_config_sorted = [for k in sort(keys(local.runner_matcher_config)) : local.runner_matcher_config[k]]
-}
-
-
 resource "aws_lambda_function" "webhook" {
   s3_bucket         = var.lambda_s3_bucket != null ? var.lambda_s3_bucket : null
   s3_key            = var.webhook_lambda_s3_key != null ? var.webhook_lambda_s3_key : null
@@ -17,21 +8,18 @@ resource "aws_lambda_function" "webhook" {
   role              = aws_iam_role.webhook_lambda.arn
   handler           = "index.githubWebhook"
   runtime           = var.lambda_runtime
-  memory_size       = var.lambda_memory_size
   timeout           = var.lambda_timeout
   architectures     = [var.lambda_architecture]
 
   environment {
     variables = {
-      LOG_LEVEL                                = var.log_level
-      POWERTOOLS_LOGGER_LOG_EVENT              = var.log_level == "debug" ? "true" : "false"
-      POWERTOOLS_TRACE_ENABLED                 = var.tracing_config.mode != null ? true : false
-      POWERTOOLS_TRACER_CAPTURE_HTTPS_REQUESTS = var.tracing_config.capture_http_requests
-      POWERTOOLS_TRACER_CAPTURE_ERROR          = var.tracing_config.capture_error
-      PARAMETER_GITHUB_APP_WEBHOOK_SECRET      = var.github_app_parameters.webhook_secret.name
-      REPOSITORY_ALLOW_LIST                    = jsonencode(var.repository_white_list)
-      SQS_WORKFLOW_JOB_QUEUE                   = try(var.sqs_workflow_job_queue, null) != null ? var.sqs_workflow_job_queue.id : ""
-      PARAMETER_RUNNER_MATCHER_CONFIG_PATH     = aws_ssm_parameter.runner_matcher_config.name
+      ENVIRONMENT                         = var.prefix
+      LOG_LEVEL                           = var.log_level
+      POWERTOOLS_LOGGER_LOG_EVENT         = var.log_level == "debug" ? "true" : "false"
+      PARAMETER_GITHUB_APP_WEBHOOK_SECRET = var.github_app_parameters.webhook_secret.name
+      REPOSITORY_WHITE_LIST               = jsonencode(var.repository_white_list)
+      RUNNER_CONFIG                       = jsonencode([for k, v in var.runner_config : v])
+      SQS_WORKFLOW_JOB_QUEUE              = try(var.sqs_workflow_job_queue, null) != null ? var.sqs_workflow_job_queue.id : ""
     }
   }
 
@@ -46,13 +34,10 @@ resource "aws_lambda_function" "webhook" {
   tags = var.tags
 
   dynamic "tracing_config" {
-    for_each = var.tracing_config.mode != null ? [true] : []
+    for_each = var.lambda_tracing_mode != null ? [true] : []
     content {
-      mode = var.tracing_config.mode
+      mode = var.lambda_tracing_mode
     }
-  }
-  lifecycle {
-    replace_triggered_by = [aws_ssm_parameter.runner_matcher_config, null_resource.github_app_parameters]
   }
 }
 
@@ -69,15 +54,6 @@ resource "aws_lambda_permission" "webhook" {
   function_name = aws_lambda_function.webhook.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.webhook.execution_arn}/*/*/${local.webhook_endpoint}"
-  lifecycle {
-    replace_triggered_by = [aws_ssm_parameter.runner_matcher_config, null_resource.github_app_parameters]
-  }
-}
-
-resource "null_resource" "github_app_parameters" {
-  triggers = {
-    github_app_webhook_secret = var.github_app_parameters.webhook_secret.name
-  }
 }
 
 data "aws_iam_policy_document" "lambda_assume_role_policy" {
@@ -118,7 +94,7 @@ resource "aws_iam_role_policy" "webhook_sqs" {
   role = aws_iam_role.webhook_lambda.name
 
   policy = templatefile("${path.module}/policies/lambda-publish-sqs-policy.json", {
-    sqs_resource_arns = jsonencode([for k, v in var.runner_matcher_config : v.arn])
+    sqs_resource_arns = jsonencode([for k, v in var.runner_config : v.arn])
     kms_key_arn       = var.kms_key_arn != null ? var.kms_key_arn : ""
   })
 }
@@ -139,13 +115,12 @@ resource "aws_iam_role_policy" "webhook_ssm" {
   role = aws_iam_role.webhook_lambda.name
 
   policy = templatefile("${path.module}/policies/lambda-ssm.json", {
-    github_app_webhook_secret_arn       = var.github_app_parameters.webhook_secret.arn,
-    parameter_runner_matcher_config_arn = aws_ssm_parameter.runner_matcher_config.arn
+    github_app_webhook_secret_arn = var.github_app_parameters.webhook_secret.arn,
   })
 }
 
 resource "aws_iam_role_policy" "xray" {
-  count  = var.tracing_config.mode != null ? 1 : 0
+  count  = var.lambda_tracing_mode != null ? 1 : 0
   policy = data.aws_iam_policy_document.lambda_xray[0].json
   role   = aws_iam_role.webhook_lambda.name
 }

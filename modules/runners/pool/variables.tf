@@ -1,5 +1,4 @@
 variable "config" {
-  description = "Lookup details in parent module."
   type = object({
     lambda = object({
       log_level                      = string
@@ -12,7 +11,6 @@ variable "config" {
       security_group_ids             = list(string)
       runtime                        = string
       architecture                   = string
-      memory_size                    = number
       timeout                        = number
       zip                            = string
       subnet_ids                     = list(string)
@@ -28,12 +26,10 @@ variable "config" {
     })
     subnet_ids = list(string)
     runner = object({
-      disable_runner_autoupdate            = bool
-      ephemeral                            = bool
-      enable_jit_config                    = bool
-      enable_on_demand_failover_for_errors = list(string)
-      boot_time_in_minutes                 = number
-      labels                               = list(string)
+      disable_runner_autoupdate = bool
+      ephemeral                 = bool
+      boot_time_in_minutes      = number
+      extra_labels              = string
       launch_template = object({
         name = string
       })
@@ -58,10 +54,8 @@ variable "config" {
     ami_kms_key_arn                      = string
     role_path                            = string
     ssm_token_path                       = string
-    ssm_config_path                      = string
     ami_id_ssm_parameter_name            = string
     ami_id_ssm_parameter_read_policy_arn = string
-    arn_ssm_parameters_path_config       = string
   })
 }
 
@@ -71,14 +65,8 @@ variable "aws_partition" {
   default     = "aws"
 }
 
-variable "tracing_config" {
-  description = "Configuration for lambda tracing."
-  type = object({
-    mode                  = optional(string, null)
-    capture_http_requests = optional(bool, false)
-    capture_error         = optional(bool, false)
-  })
-  default = {}
+variable "lambda_tracing_mode" {
+  description = "Enable X-Ray tracing for the lambda functions."
+  type        = string
+  default     = null
 }
-
-

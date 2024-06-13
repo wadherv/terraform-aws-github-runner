@@ -1,1 +1,0 @@
---8<-- "examples/termination-watcher/README.md"

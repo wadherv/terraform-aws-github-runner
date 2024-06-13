@@ -8,14 +8,12 @@ resource "aws_s3_bucket" "action_dist" {
   tags          = var.tags
 }
 
-resource "aws_s3_bucket_ownership_controls" "this" {
+resource "aws_s3_bucket_acl" "action_dist_acl" {
   bucket = aws_s3_bucket.action_dist.id
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
+  acl    = "private"
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "bucket_config" {
+resource "aws_s3_bucket_lifecycle_configuration" "bucket-config" {
   bucket = aws_s3_bucket.action_dist.id
 
   rule {
@@ -72,59 +70,38 @@ resource "aws_s3_bucket_logging" "action_dist_logging" {
   target_prefix = var.s3_logging_bucket_prefix != null ? var.s3_logging_bucket_prefix : var.distribution_bucket_name
 }
 
-resource "aws_s3_bucket_versioning" "action_dist" {
-  bucket = aws_s3_bucket.action_dist.id
-  versioning_configuration {
-    status = var.s3_versioning
-  }
-}
+data "aws_iam_policy_document" "action_dist_sse_policy" {
+  count = try(var.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default, null) != null ? 1 : 0
 
-data "aws_iam_policy_document" "action_dist_bucket_policy" {
   statement {
-    sid       = "ForceSSLOnlyAccess"
-    effect    = "Deny"
-    actions   = ["s3:*"]
-    resources = [aws_s3_bucket.action_dist.arn, "${aws_s3_bucket.action_dist.arn}/*"]
+    effect = "Deny"
 
     principals {
-      identifiers = ["*"]
-      type        = "*"
+      type = "AWS"
+
+      identifiers = [
+        "*",
+      ]
     }
+
+    actions = [
+      "s3:PutObject",
+    ]
+
+    resources = [
+      "${aws_s3_bucket.action_dist.arn}/*",
+    ]
 
     condition {
-      test     = "Bool"
-      values   = ["false"]
-      variable = "aws:SecureTransport"
-    }
-  }
-
-  dynamic "statement" {
-    for_each = try(var.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default, null) != null ? [true] : []
-
-    content {
-      sid       = "ForceSSE"
-      effect    = "Deny"
-      actions   = ["s3:PutObject"]
-      resources = ["${aws_s3_bucket.action_dist.arn}/*"]
-
-      principals {
-        type = "AWS"
-
-        identifiers = [
-          "*",
-        ]
-      }
-
-      condition {
-        test     = "StringNotEquals"
-        variable = "s3:x-amz-server-side-encryption"
-        values   = [var.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default.sse_algorithm]
-      }
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = [var.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default.sse_algorithm]
     }
   }
 }
 
-resource "aws_s3_bucket_policy" "action_dist_bucket_policy" {
+resource "aws_s3_bucket_policy" "action_dist_sse_policy" {
+  count  = try(var.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default, null) != null ? 1 : 0
   bucket = aws_s3_bucket.action_dist.id
-  policy = data.aws_iam_policy_document.action_dist_bucket_policy.json
+  policy = data.aws_iam_policy_document.action_dist_sse_policy[0].json
 }

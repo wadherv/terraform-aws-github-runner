@@ -12,14 +12,6 @@ module "lambdas" {
     {
       name = "runner-binaries-syncer"
       tag  = var.module_version
-    },
-    {
-      name = "ami-housekeeper"
-      tag  = var.module_version
-    },
-    {
-      name = "termination-watcher"
-      tag  = var.module_version
     }
   ]
 }

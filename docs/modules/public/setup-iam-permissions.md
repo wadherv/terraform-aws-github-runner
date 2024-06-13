@@ -1,1 +1,0 @@
---8<-- "modules/setup-iam-permissions/README.md"

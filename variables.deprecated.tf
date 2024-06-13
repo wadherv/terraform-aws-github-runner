@@ -1,30 +1,43 @@
-# tflint-ignore: terraform_unused_declarations
-variable "lambda_tracing_mode" {
-  description = "DEPRECATED: Replaced by `tracing_config`."
+variable "enabled_userdata" {
+  description = "DEPCRECATED: Replaced by `enable_userdata`."
   type        = string
   default     = null
 
   validation {
-    condition     = anytrue([var.lambda_tracing_mode == null])
-    error_message = "DEPRECATED, Replaced by `tracing_config`."
+    condition     = anytrue([var.enabled_userdata == null])
+    error_message = "DEPCRECATED, replaced by `enable_userdata`."
   }
 }
 
-# tflint-ignore: terraform_unused_declarations
-variable "enable_event_rule_binaries_syncer" {
-  description = "DEPRECATED: Replaced by `state_event_rule_binaries_syncer`."
-  type        = bool
+variable "runner_enable_workflow_job_labels_check_all" {
+  description = "DEPCRECATED: Replaced by `enable_runner_workflow_job_labels_check_all`."
+  type        = string
   default     = null
+
   validation {
-    condition     = var.enable_event_rule_binaries_syncer == null
-    error_message = "DEPRECATED, Replaced by `state_event_rule_binaries_syncer`."
+    condition     = anytrue([var.runner_enable_workflow_job_labels_check_all == null])
+    error_message = "DEPCRECATED, replaced by `enable_runner_workflow_job_labels_check_all`."
   }
 }
 
-
-# tflint-ignore: terraform_naming_convention
-variable "runners_scale_up_Lambda_memory_size" {
-  description = "Memory size limit in MB for scale-up lambda."
-  type        = number
+variable "fifo_build_queue" {
+  description = "DEPCRECATED: Replaced by `enable_fifo_build_queue`."
+  type        = string
   default     = null
+
+  validation {
+    condition     = anytrue([var.fifo_build_queue == null])
+    error_message = "DEPCRECATED, replaced by `enable_fifo_build_queue`."
+  }
+}
+
+variable "enable_enable_fifo_build_queue" {
+  description = "DEPCRECATED: Replaced by `enable_fifo_build_queue` / `fifo_build_queue`."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = anytrue([var.enable_enable_fifo_build_queue == null])
+    error_message = "DEPCRECATED, replaced by `enable_fifo_build_queue`."
+  }
 }

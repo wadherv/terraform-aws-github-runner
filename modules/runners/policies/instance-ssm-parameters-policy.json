@@ -8,12 +8,7 @@
         "ssm:GetParameters",
         "ssm:GetParameter"
       ],
-      "Resource": "${arn_ssm_parameters_path_tokens}/*",
-      "Condition": {
-        "StringLike": {
-          "ec2:SourceInstanceARN": "*/$${aws:ResourceTag/InstanceId}"
-        }
-      }
+      "Resource": "${arn_ssm_parameters_path_tokens}*"
     },
     {
       "Effect": "Allow",

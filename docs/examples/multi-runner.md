@@ -1,1 +1,0 @@
---8<-- "examples/multi-runner/README.md"

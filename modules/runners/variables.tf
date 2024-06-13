@@ -29,6 +29,17 @@ variable "tags" {
   default     = {}
 }
 
+variable "environment" {
+  description = "A name that identifies the environment, used as prefix and for tagging."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.environment == null
+    error_message = "The \"environment\" variable is no longer used. To migrate, set the \"prefix\" variable to the original value of \"environment\" and optionally, add \"Environment\" to the \"tags\" variable map with the same value."
+  }
+}
+
 variable "prefix" {
   description = "The prefix used for naming resources"
   type        = string
@@ -60,12 +71,6 @@ variable "block_device_mappings" {
   default = [{
     volume_size = 30
   }]
-}
-
-variable "ebs_optimized" {
-  description = "The EC2 EBS optimized configuration."
-  type        = bool
-  default     = false
 }
 
 variable "instance_target_capacity_type" {
@@ -107,8 +112,14 @@ variable "runner_os" {
   }
 }
 
+variable "instance_type" { # tflint-ignore: terraform_unused_declarations
+  description = "[DEPRECATED] See instance_types."
+  type        = string
+  default     = "m5.large"
+}
+
 variable "instance_types" {
-  description = "List of instance types for the action runner. Defaults are based on runner_os (al2023 for linux and Windows Server Core for win)."
+  description = "List of instance types for the action runner. Defaults are based on runner_os (amzn2 for linux and Windows Server Core for win)."
   type        = list(string)
   default     = null
 }
@@ -116,12 +127,7 @@ variable "instance_types" {
 variable "ami_filter" {
   description = "Map of lists used to create the AMI filter for the action runner AMI."
   type        = map(list(string))
-  default     = { state = ["available"] }
-  validation {
-    # check the availability of the AMI
-    condition     = contains(keys(var.ami_filter), "state")
-    error_message = "The \"ami_filter\" variable must contain the \"state\" key with the value \"available\"."
-  }
+  default     = null
 }
 
 variable "ami_owners" {
@@ -149,13 +155,7 @@ variable "enable_userdata" {
 }
 
 variable "userdata_template" {
-  description = "Alternative user-data template file path, replacing the default template. By providing your own user_data you have to take care of installing all required software, including the action runner. Variables userdata_pre/post_install are ignored."
-  type        = string
-  default     = null
-}
-
-variable "userdata_content" {
-  description = "Alternative user-data content, replacing the templated one. By providing your own user_data you have to take care of installing all required software, including the action runner and registering the runner.  Be-aware configuration paramaters in SSM as well as tags are treated as internals. Changes will not trigger a breaking release."
+  description = "Alternative user-data template, replacing the default template. By providing your own user_data you have to take care of installing all required software, including the action runner. Variables userdata_pre/post_install are ignored."
   type        = string
   default     = null
 }
@@ -180,8 +180,7 @@ variable "sqs_build_queue" {
 }
 
 variable "enable_organization_runners" {
-  description = "Register runners to organization, instead of repo level"
-  type        = bool
+  type = bool
 }
 
 variable "github_app_parameters" {
@@ -190,12 +189,6 @@ variable "github_app_parameters" {
     key_base64 = map(string)
     id         = map(string)
   })
-}
-
-variable "lambda_scale_down_memory_size" {
-  description = "Memory size limit in MB for scale down lambda."
-  type        = number
-  default     = 512
 }
 
 variable "scale_down_schedule_expression" {
@@ -216,9 +209,10 @@ variable "runner_boot_time_in_minutes" {
   default     = 5
 }
 
-variable "runner_labels" {
-  description = "All the labels for the runners (GitHub) including the default one's(e.g: self-hosted, linux, x64, label1, label2). Separate each label by a comma"
-  type        = list(string)
+variable "runner_extra_labels" {
+  description = "Extra labels for the runners (GitHub). Separate each label by a comma"
+  type        = string
+  default     = ""
 }
 
 variable "runner_group_name" {
@@ -243,12 +237,6 @@ variable "scale_up_reserved_concurrent_executions" {
   description = "Amount of reserved concurrent executions for the scale-up lambda function. A value of 0 disables lambda from being triggered and -1 removes any concurrency limitations."
   type        = number
   default     = 1
-}
-
-variable "lambda_scale_up_memory_size" {
-  description = "Memory size limit in MB for scale-up lambda."
-  type        = number
-  default     = 512
 }
 
 variable "lambda_timeout_scale_up" {
@@ -288,7 +276,7 @@ variable "runner_run_as" {
 }
 
 variable "runners_maximum_count" {
-  description = "The maximum number of runners that will be created. Setting the variable to `-1` desiables the maximum check."
+  description = "The maximum number of runners that will be created."
   type        = number
   default     = 3
 }
@@ -302,10 +290,9 @@ variable "runner_architecture" {
 variable "idle_config" {
   description = "List of time period that can be defined as cron expression to keep a minimum amount of runners active instead of scaling down to 0. By defining this list you can ensure that in time periods that match the cron expression within 5 seconds a runner is kept idle."
   type = list(object({
-    cron             = string
-    timeZone         = string
-    idleCount        = number
-    evictionStrategy = optional(string, "oldest_first")
+    cron      = string
+    timeZone  = string
+    idleCount = number
   }))
   default = []
 }
@@ -466,6 +453,16 @@ variable "egress_rules" {
   }]
 }
 
+variable "log_type" {
+  description = "Logging format for lambda logging. Valid values are 'json', 'pretty', 'hidden'. "
+  type        = string
+  default     = null
+  validation {
+    condition     = var.log_type == null
+    error_message = "DEPRECATED: `log_type` is not longer supported."
+  }
+}
+
 variable "log_level" {
   description = "Logging level for lambda logging. Valid values are  'silly', 'trace', 'debug', 'info', 'warn', 'error', 'fatal'."
   type        = string
@@ -496,7 +493,7 @@ variable "metadata_options" {
   default = {
     instance_metadata_tags      = "enabled"
     http_endpoint               = "enabled"
-    http_tokens                 = "required"
+    http_tokens                 = "optional"
     http_put_response_hop_limit = 1
   }
 }
@@ -517,12 +514,6 @@ variable "pool_lambda_timeout" {
   description = "Time out for the pool lambda in seconds."
   type        = number
   default     = 60
-}
-
-variable "pool_lambda_memory_size" {
-  description = "Lambda Memory size limit in MB for pool lambda"
-  type        = number
-  default     = 512
 }
 
 variable "pool_runner_owner" {
@@ -547,7 +538,7 @@ variable "pool_config" {
 }
 
 variable "disable_runner_autoupdate" {
-  description = "Disable the auto update of the github runner agent. Be aware there is a grace period of 30 days, see also the [GitHub article](https://github.blog/changelog/2022-02-01-github-actions-self-hosted-runners-can-now-disable-automatic-updates/)"
+  description = "Disable the auto update of the github runner agent. Be-aware there is a grace period of 30 days, see also the [GitHub article](https://github.blog/changelog/2022-02-01-github-actions-self-hosted-runners-can-now-disable-automatic-updates/)"
   type        = bool
   default     = false
 }
@@ -555,7 +546,7 @@ variable "disable_runner_autoupdate" {
 variable "lambda_runtime" {
   description = "AWS Lambda runtime."
   type        = string
-  default     = "nodejs20.x"
+  default     = "nodejs18.x"
 }
 
 variable "lambda_architecture" {
@@ -580,7 +571,7 @@ variable "enable_user_data_debug_logging" {
 }
 
 variable "ssm_paths" {
-  description = "The root path used in SSM to store configuration and secrets."
+  description = "The root path used in SSM to store configuration and secreets."
   type = object({
     root   = string
     tokens = string
@@ -598,66 +589,8 @@ variable "runner_name_prefix" {
   }
 }
 
-variable "tracing_config" {
-  description = "Configuration for lambda tracing."
-  type = object({
-    mode                  = optional(string, null)
-    capture_http_requests = optional(bool, false)
-    capture_error         = optional(bool, false)
-  })
-  default = {}
-}
-
-
-variable "credit_specification" {
-  description = "The credit option for CPU usage of a T instance. Can be unset, \"standard\" or \"unlimited\"."
+variable "lambda_tracing_mode" {
+  description = "Enable X-Ray tracing for the lambda functions."
   type        = string
   default     = null
-
-  validation {
-    condition     = var.credit_specification == null ? true : contains(["standard", "unlimited"], var.credit_specification)
-    error_message = "Valid values for credit_specification are (null, \"standard\", \"unlimited\")."
-  }
-}
-
-variable "enable_jit_config" {
-  description = "Overwrite the default behavior for JIT configuration. By default JIT configuration is enabled for ephemeral runners and disabled for non-ephemeral runners. In case of GHES check first if the JIT config API is avaialbe. In case you upgradeing from 3.x to 4.x you can set `enable_jit_config` to `false` to avoid a breaking change when having your own AMI."
-  type        = bool
-  default     = null
-}
-
-variable "associate_public_ipv4_address" {
-  description = "Associate public IPv4 with the runner. Only tested with IPv4"
-  type        = bool
-  default     = false
-}
-
-variable "ssm_housekeeper" {
-  description = <<EOF
-  Configuration for the SSM housekeeper lambda. This lambda deletes token / JIT config from SSM.
-
-  `schedule_expression`: is used to configure the schedule for the lambda.
-  `state`: state of the cloudwatch event rule. Valid values are `DISABLED`, `ENABLED`, and `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS`.
-  `lambda_memory_size`: lambda memery size limit.
-  `lambda_timeout`: timeout for the lambda in seconds.
-  `config`: configuration for the lambda function. Token path will be read by default from the module.
-  EOF
-  type = object({
-    schedule_expression = optional(string, "rate(1 day)")
-    state               = optional(string, "ENABLED")
-    lambda_memory_size  = optional(number, 512)
-    lambda_timeout      = optional(number, 60)
-    config = object({
-      tokenPath      = optional(string)
-      minimumDaysOld = optional(number, 1)
-      dryRun         = optional(bool, false)
-    })
-  })
-  default = { config = {} }
-}
-
-variable "enable_on_demand_failover_for_errors" {
-  description = "Enable on-demand failover. For example to fall back to on demand when no spot capacity is available the variable can be set to `InsufficientInstanceCapacity`. When not defined the default behavior is to retry later."
-  type        = list(string)
-  default     = []
 }
