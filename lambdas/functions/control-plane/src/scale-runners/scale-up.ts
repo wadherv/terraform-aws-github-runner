@@ -255,8 +255,7 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   const onDemandFailoverOnError = process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS
     ? (JSON.parse(process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS) as [string])
     : [];
-  const ssmParameterStoreTags: { Key: string; Value: string }[] =
-    process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
+  const ssmParameterStoreTags: { Key: string; Value: string }[] = process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
       ? JSON.parse(process.env.SSM_PARAMETER_STORE_TAGS)
       : [];
 
@@ -476,7 +475,6 @@ async function createJitConfig(githubRunnerConfig: CreateGitHubRunnerConfig, ins
     logger.debug('Runner JIT config for ephemeral runner generated.', {
       instance: instance,
     });
-    const tags = [{ Key: 'InstanceId', Value: instance }]
     await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerConfig.data.encoded_jit_config, true, {
       tags: [
         { Key: 'InstanceId', Value: instance },
