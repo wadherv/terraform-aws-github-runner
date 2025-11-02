@@ -43,7 +43,7 @@ export async function adjust(event: PoolEvent): Promise<void> {
     : [];
   const ssmParameterStoreTags = process.env.SSM_PARAMETER_STORE_TAGS
     ? JSON.parse(process.env.SSM_PARAMETER_STORE_TAGS)
-    : {};
+    : [];
 
   const { ghesApiUrl, ghesBaseUrl } = getGitHubEnterpriseApiUrl();
 
