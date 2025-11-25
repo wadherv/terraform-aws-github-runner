@@ -88,31 +88,34 @@ function generateRunnerServiceConfig(githubRunnerConfig: CreateGitHubRunnerConfi
   return config;
 }
 
-function parseSsmParameterStoreTags(input?: string) {
-  if (!input || input.trim() === '') return [] as { Key: string; Value: string }[];
-
+function validateSsmParameterStoreTags(tagsJson: string): { Key: string; Value: string }[] {
   try {
-    const parsed = JSON.parse(input);
-    if (!Array.isArray(parsed)) {
-      logger.warn('SSM_PARAMETER_STORE_TAGS is not a JSON array; ignoring and using [].');
+    const tags = JSON.parse(tagsJson);
+
+    if (!Array.isArray(tags)) {
+      throw new Error('Tags must be an array');
+    }
+
+    if (tags.length === 0) {
       return [];
     }
 
-    const isValid = parsed.every(
-      (item: any) => item && typeof item === 'object' && typeof item.Key === 'string' && typeof item.Value === 'string',
-    );
+    tags.forEach((tag, index) => {
+      if (typeof tag !== 'object' || tag === null) {
+        throw new Error(`Tag at index ${index} must be an object`);
+      }
+      if (!tag.Key || typeof tag.Key !== 'string' || tag.Key.trim() === '') {
+        throw new Error(`Tag at index ${index} has missing or invalid 'Key' property`);
+      }
+      if (!tag.Value || typeof tag.Value !== 'string' || tag.Value.trim() === '') {
+        throw new Error(`Tag at index ${index} has missing or invalid 'Value' property`);
+      }
+    });
 
-    if (!isValid) {
-      logger.warn(
-        'SSM_PARAMETER_STORE_TAGS must be an array of objects with string Key and Value properties; ignoring and using [].',
-      );
-      return [];
-    }
-
-    return parsed as { Key: string; Value: string }[];
+    return tags;
   } catch (err) {
-    logger.warn('SSM_PARAMETER_STORE_TAGS is not valid JSON; ignoring and using [].', err as Error);
-    return [];
+    logger.error('Invalid SSM_PARAMETER_STORE_TAGS format', { error: err });
+    throw new Error(`Failed to parse SSM_PARAMETER_STORE_TAGS: ${(err as Error).message}`);
   }
 }
 
@@ -283,9 +286,10 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   const onDemandFailoverOnError = process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS
     ? (JSON.parse(process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS) as [string])
     : [];
-  const ssmParameterStoreTags: { Key: string; Value: string }[] = parseSsmParameterStoreTags(
-    process.env.SSM_PARAMETER_STORE_TAGS,
-  );
+  const ssmParameterStoreTags: { Key: string; Value: string }[] =
+    process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
+      ? validateSsmParameterStoreTags(process.env.SSM_PARAMETER_STORE_TAGS)
+      : [];
 
   if (ephemeralEnabled && payload.eventType !== 'workflow_job') {
     logger.warn(`${payload.eventType} event is not supported in combination with ephemeral runners.`);
