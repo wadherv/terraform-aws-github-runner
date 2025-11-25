@@ -88,6 +88,38 @@ function generateRunnerServiceConfig(githubRunnerConfig: CreateGitHubRunnerConfi
   return config;
 }
 
+function parseSsmParameterStoreTags(input?: string) {
+  if (!input || input.trim() === '') return [] as { Key: string; Value: string }[];
+
+  try {
+    const parsed = JSON.parse(input);
+    if (!Array.isArray(parsed)) {
+      logger.warn('SSM_PARAMETER_STORE_TAGS is not a JSON array; ignoring and using [].');
+      return [];
+    }
+
+    const isValid = parsed.every(
+      (item: any) =>
+        item &&
+        typeof item === 'object' &&
+        typeof item.Key === 'string' &&
+        typeof item.Value === 'string',
+    );
+
+    if (!isValid) {
+      logger.warn(
+        'SSM_PARAMETER_STORE_TAGS must be an array of objects with string Key and Value properties; ignoring and using [].',
+      );
+      return [];
+    }
+
+    return parsed as { Key: string; Value: string }[];
+  } catch (err) {
+    logger.warn('SSM_PARAMETER_STORE_TAGS is not valid JSON; ignoring and using [].', err as Error);
+    return [];
+  }
+}
+
 async function getGithubRunnerRegistrationToken(githubRunnerConfig: CreateGitHubRunnerConfig, ghClient: Octokit) {
   const registrationToken =
     githubRunnerConfig.runnerType === 'Org'
@@ -255,10 +287,9 @@ export async function scaleUp(eventSource: string, payload: ActionRequestMessage
   const onDemandFailoverOnError = process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS
     ? (JSON.parse(process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS) as [string])
     : [];
-  const ssmParameterStoreTags: { Key: string; Value: string }[] =
-    process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
-      ? JSON.parse(process.env.SSM_PARAMETER_STORE_TAGS)
-      : [];
+  const ssmParameterStoreTags: { Key: string; Value: string }[] = parseSsmParameterStoreTags(
+    process.env.SSM_PARAMETER_STORE_TAGS,
+  );
 
   if (ephemeralEnabled && payload.eventType !== 'workflow_job') {
     logger.warn(`${payload.eventType} event is not supported in combination with ephemeral runners.`);
