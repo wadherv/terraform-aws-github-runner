@@ -99,11 +99,7 @@ function parseSsmParameterStoreTags(input?: string) {
     }
 
     const isValid = parsed.every(
-      (item: any) =>
-        item &&
-        typeof item === 'object' &&
-        typeof item.Key === 'string' &&
-        typeof item.Value === 'string',
+      (item: any) => item && typeof item === 'object' && typeof item.Key === 'string' && typeof item.Value === 'string',
     );
 
     if (!isValid) {
