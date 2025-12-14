@@ -51,6 +51,7 @@ interface CreateGitHubRunnerConfig {
   disableAutoUpdate: boolean;
   ssmTokenPath: string;
   ssmConfigPath: string;
+  ssmParameterStoreTags: { Key: string; Value: string }[];
 }
 
 interface CreateEC2RunnerConfig {
@@ -182,6 +183,9 @@ async function getRunnerGroupId(githubRunnerConfig: CreateGitHubRunnerConfig, gh
           `${githubRunnerConfig.ssmConfigPath}/runner-group/${githubRunnerConfig.runnerGroup}`,
           runnerGroupId.toString(),
           false,
+          {
+            tags: githubRunnerConfig.ssmParameterStoreTags,
+          },
         );
       } catch (err) {
         logger.debug('Error storing runner group id in SSM Parameter Store', err as Error);
@@ -255,6 +259,10 @@ export async function scaleUp(payloads: ActionRequestMessageSQS[]): Promise<stri
   const onDemandFailoverOnError = process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS
     ? (JSON.parse(process.env.ENABLE_ON_DEMAND_FAILOVER_FOR_ERRORS) as [string])
     : [];
+  const ssmParameterStoreTags: { Key: string; Value: string }[] =
+    process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
+      ? JSON.parse(process.env.SSM_PARAMETER_STORE_TAGS)
+      : [];
 
   const { ghesApiUrl, ghesBaseUrl } = getGitHubEnterpriseApiUrl();
 
@@ -417,6 +425,7 @@ export async function scaleUp(payloads: ActionRequestMessageSQS[]): Promise<stri
         disableAutoUpdate,
         ssmTokenPath,
         ssmConfigPath,
+        ssmParameterStoreTags,
       },
       {
         ec2instanceCriteria: {
@@ -510,7 +519,7 @@ async function createRegistrationTokenConfig(
 
   for (const instance of instances) {
     await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerServiceConfig.join(' '), true, {
-      tags: [{ Key: 'InstanceId', Value: instance }],
+      tags: [{ Key: 'InstanceId', Value: instance }, ...githubRunnerConfig.ssmParameterStoreTags],
     });
     if (isDelay) {
       // Delay to prevent AWS ssm rate limits by being within the max throughput limit
@@ -568,7 +577,7 @@ async function createJitConfig(githubRunnerConfig: CreateGitHubRunnerConfig, ins
       instance: instance,
     });
     await putParameter(`${githubRunnerConfig.ssmTokenPath}/${instance}`, runnerConfig.data.encoded_jit_config, true, {
-      tags: [{ Key: 'InstanceId', Value: instance }],
+      tags: [{ Key: 'InstanceId', Value: instance }, ...githubRunnerConfig.ssmParameterStoreTags],
     });
     if (isDelay) {
       // Delay to prevent AWS ssm rate limits by being within the max throughput limit
