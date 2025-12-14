@@ -90,6 +90,37 @@ function generateRunnerServiceConfig(githubRunnerConfig: CreateGitHubRunnerConfi
   return config;
 }
 
+export function validateSsmParameterStoreTags(tagsJson: string): { Key: string; Value: string }[] {
+  try {
+    const tags = JSON.parse(tagsJson);
+
+    if (!Array.isArray(tags)) {
+      throw new Error('Tags must be an array');
+    }
+
+    if (tags.length === 0) {
+      return [];
+    }
+
+    tags.forEach((tag, index) => {
+      if (typeof tag !== 'object' || tag === null) {
+        throw new Error(`Tag at index ${index} must be an object`);
+      }
+      if (!tag.Key || typeof tag.Key !== 'string' || tag.Key.trim() === '') {
+        throw new Error(`Tag at index ${index} has missing or invalid 'Key' property`);
+      }
+      if (!tag.Value || typeof tag.Value !== 'string' || tag.Value.trim() === '') {
+        throw new Error(`Tag at index ${index} has missing or invalid 'Value' property`);
+      }
+    });
+
+    return tags;
+  } catch (err) {
+    logger.error('Invalid SSM_PARAMETER_STORE_TAGS format', { error: err });
+    throw new Error(`Failed to parse SSM_PARAMETER_STORE_TAGS: ${(err as Error).message}`);
+  }
+}
+
 async function getGithubRunnerRegistrationToken(githubRunnerConfig: CreateGitHubRunnerConfig, ghClient: Octokit) {
   const registrationToken =
     githubRunnerConfig.runnerType === 'Org'
@@ -261,7 +292,7 @@ export async function scaleUp(payloads: ActionRequestMessageSQS[]): Promise<stri
     : [];
   const ssmParameterStoreTags: { Key: string; Value: string }[] =
     process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
-      ? JSON.parse(process.env.SSM_PARAMETER_STORE_TAGS)
+      ? validateSsmParameterStoreTags(process.env.SSM_PARAMETER_STORE_TAGS)
       : [];
 
   const { ghesApiUrl, ghesBaseUrl } = getGitHubEnterpriseApiUrl();
