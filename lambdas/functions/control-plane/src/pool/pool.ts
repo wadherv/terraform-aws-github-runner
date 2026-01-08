@@ -46,6 +46,7 @@ export async function adjust(event: PoolEvent): Promise<void> {
     process.env.SSM_PARAMETER_STORE_TAGS && process.env.SSM_PARAMETER_STORE_TAGS.trim() !== ''
       ? validateSsmParameterStoreTags(process.env.SSM_PARAMETER_STORE_TAGS)
       : [];
+  const scaleErrors = JSON.parse(process.env.SCALE_ERRORS) as [string];
 
   const { ghesApiUrl, ghesBaseUrl } = getGitHubEnterpriseApiUrl();
 
@@ -101,6 +102,7 @@ export async function adjust(event: PoolEvent): Promise<void> {
         amiIdSsmParameterName,
         tracingEnabled,
         onDemandFailoverOnError,
+        scaleErrors,
       },
       topUp,
       githubInstallationClient,
