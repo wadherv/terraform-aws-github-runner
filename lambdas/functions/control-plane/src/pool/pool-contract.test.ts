@@ -1,14 +1,14 @@
 import type { Octokit } from '@octokit/rest';
-import type { RunnerProviderType } from '@aws-github-runner/runner-providers/provider-types';
+import type { ComputeProviderType } from '@aws-github-runner/compute-providers/provider-types';
 import { beforeEach, vi } from 'vitest';
 
-import { definePoolContractTests } from '../test/runner-provider-contracts/pool';
-import { providerTypes } from '../test/runner-provider-contracts/provider-types';
+import { definePoolContractTests } from '../test/compute-provider-contracts/pool';
+import { providerTypes } from '../test/compute-provider-contracts/provider-types';
 import * as ghAuth from '../github/auth';
 import { controlPlaneProviderRegistry } from '../control-plane-providers';
 import * as githubRunner from '../scale-runners/github-runner';
 import { adjust } from './pool';
-import type { PoolRunnerProvider } from './pool-provider';
+import type { PoolComputeProvider } from './pool-provider';
 
 vi.mock('../github/auth', () => ({
   createGithubAppAuth: vi.fn(),
@@ -35,13 +35,13 @@ const githubClient = {
 
 const cleanEnv = process.env;
 
-const lanes = providerTypes.map((type) => ({
+const computeProviders = providerTypes.map((type) => ({
   provider: {
     type,
     listRunners: vi.fn(),
     countAvailableRunners: vi.fn(),
     createRunners: vi.fn(),
-  } satisfies PoolRunnerProvider,
+  } satisfies PoolComputeProvider,
 }));
 
 beforeEach(() => {
@@ -66,9 +66,9 @@ beforeEach(() => {
   vi.mocked(githubClient.paginate).mockResolvedValue([]);
 });
 
-definePoolContractTests<RunnerProviderType>({
+definePoolContractTests<ComputeProviderType>({
   adjust,
+  computeProviders,
   githubInstallationClient: githubClient,
-  lanes,
   resolveCapability: mockedResolveCapability,
 });
