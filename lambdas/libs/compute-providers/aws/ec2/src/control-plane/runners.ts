@@ -10,7 +10,7 @@ import {
   RunInstancesCommand,
   type RunInstancesCommandInput,
   RunInstancesCommandOutput,
-  EC2Client,
+  type EC2Client,
   FleetLaunchTemplateOverridesRequest,
   FleetOnDemandAllocationStrategy,
   SpotAllocationStrategy,
@@ -18,12 +18,13 @@ import {
   TerminateInstancesCommand,
   _InstanceType,
 } from '@aws-sdk/client-ec2';
-import { createChildLogger } from '@aws-github-runner/aws-powertools-util';
-import { getTracedAWSV3Client, tracer } from '@aws-github-runner/aws-powertools-util';
+import { createChildLogger, tracer } from '@aws-github-runner/aws-powertools-util';
 import { getParameter } from '@aws-github-runner/aws-ssm-util';
 import moment from 'moment';
 
-import type { CreateRunnerResult, RunnerInfo } from '../../../../core';
+import type { RunnerInfo } from '../../../core';
+import { getDefaultBlockDeviceNameFromLaunchTemplate } from './launch-template';
+import type { Ec2RunnerCreateResult, Ec2RunnerFailureCode } from './runner-create-result';
 import type { Ec2ListRunnerFilters, Ec2OverrideConfig, RunnerInputParameters } from './runners.d';
 
 const logger = createChildLogger('runners');
@@ -33,13 +34,63 @@ interface Ec2Filter {
   Values: string[];
 }
 
+export interface Ec2RunnerRequestContext {
+  readonly signal: AbortSignal | undefined;
+}
+
+export interface Ec2RunnerResourceOperations {
+  list(filters?: Ec2ListRunnerFilters): Promise<RunnerInfo[]>;
+  create(runnerParameters: RunnerInputParameters): Promise<Ec2RunnerCreateResult>;
+  terminate(instanceId: string): Promise<void>;
+  tag(instanceId: string, tags: Tag[]): Promise<void>;
+  untag(instanceId: string, tags: Tag[]): Promise<void>;
+}
+
+export interface Ec2RunnerProvisioningOperations extends Ec2RunnerResourceOperations {
+  getDefaultBlockDeviceNameFromLaunchTemplate(launchTemplateName: string): Promise<string>;
+}
+
+export interface Ec2RunnerClient {
+  forRequest(context: Ec2RunnerRequestContext): Ec2RunnerProvisioningOperations;
+}
+
+async function runWithRequestSignal<TResult>(
+  signal: AbortSignal | undefined,
+  operation: () => Promise<TResult>,
+): Promise<TResult> {
+  signal?.throwIfAborted();
+  return await operation();
+}
+
+export function createEc2RunnerClient(ec2Client: EC2Client): Ec2RunnerClient {
+  return {
+    forRequest: ({ signal }) => ({
+      list: (filters) => runWithRequestSignal(signal, () => listEc2Runners(ec2Client, filters, signal)),
+      create: (runnerParameters) =>
+        runWithRequestSignal(signal, () => createEc2Runner(ec2Client, runnerParameters, signal)),
+      terminate: (instanceId) => runWithRequestSignal(signal, () => terminateEc2Runner(ec2Client, instanceId, signal)),
+      tag: (instanceId, tags) => runWithRequestSignal(signal, () => tagEc2Runner(ec2Client, instanceId, tags, signal)),
+      untag: (instanceId, tags) =>
+        runWithRequestSignal(signal, () => untagEc2Runner(ec2Client, instanceId, tags, signal)),
+      getDefaultBlockDeviceNameFromLaunchTemplate: (launchTemplateName) =>
+        runWithRequestSignal(signal, () =>
+          getDefaultBlockDeviceNameFromLaunchTemplate(ec2Client, launchTemplateName, signal),
+        ),
+    }),
+  };
+}
+
 type FleetError = NonNullable<CreateFleetResult['Errors']>[number];
 
-export async function listEC2Runners(filters: Ec2ListRunnerFilters | undefined = undefined): Promise<RunnerInfo[]> {
+async function listEc2Runners(
+  ec2Client: EC2Client,
+  filters: Ec2ListRunnerFilters | undefined,
+  signal: AbortSignal | undefined,
+): Promise<RunnerInfo[]> {
   const ec2Statuses = filters?.statuses ? filters.statuses : ['running', 'pending'];
   const stateFilter: Ec2Filter[] = [{ Name: 'instance-state-name', Values: ec2Statuses }];
   const tagFilters = constructTagFilters(filters);
-  return await getRunners(stateFilter, tagFilters);
+  return await getRunners(ec2Client, stateFilter, tagFilters, signal);
 }
 
 function constructTagFilters(filters?: Ec2ListRunnerFilters): Ec2Filter[] {
@@ -59,14 +110,19 @@ function constructTagFilters(filters?: Ec2ListRunnerFilters): Ec2Filter[] {
   return tagFilters;
 }
 
-async function getRunners(ec2Filters: Ec2Filter[], tagFilters: Ec2Filter[]): Promise<RunnerInfo[]> {
-  const ec2 = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
+async function getRunners(
+  ec2Client: EC2Client,
+  ec2Filters: Ec2Filter[],
+  tagFilters: Ec2Filter[],
+  signal: AbortSignal | undefined,
+): Promise<RunnerInfo[]> {
   const runners: RunnerInfo[] = [];
   let nextToken;
   let hasNext = true;
   while (hasNext) {
-    const instances: DescribeInstancesResult = await ec2.send(
+    const instances: DescribeInstancesResult = await ec2Client.send(
       new DescribeInstancesCommand({ Filters: ec2Filters, NextToken: nextToken }),
+      { abortSignal: signal },
     );
     hasNext = instances.NextToken ? true : false;
     nextToken = instances.NextToken;
@@ -112,6 +168,7 @@ function getRunnerInfo(runningInstances: DescribeInstancesResult) {
             orphan: i.Tags?.find((e) => e.Key === 'ghr:orphan')?.Value === 'true',
             githubRunnerId: i.Tags?.find((e) => e.Key === 'ghr:github_runner_id')?.Value as string,
             bypassRemoval: i.Tags?.find((e) => e.Key === 'ghr:bypass-removal')?.Value === 'true',
+            idleDetectedAt: i.Tags?.find((e) => e.Key === 'ghr:idle_detected_at')?.Value,
           });
         }
       }
@@ -120,23 +177,34 @@ function getRunnerInfo(runningInstances: DescribeInstancesResult) {
   return runners;
 }
 
-export async function terminateRunner(instanceId: string): Promise<void> {
+async function terminateEc2Runner(
+  ec2Client: EC2Client,
+  instanceId: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
   logger.debug(`Runner '${instanceId}' will be terminated.`);
-  const ec2 = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
-  await ec2.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+  await ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }), { abortSignal: signal });
   logger.debug(`Runner ${instanceId} has been terminated.`);
 }
 
-export async function tag(instanceId: string, tags: Tag[]): Promise<void> {
+async function tagEc2Runner(
+  ec2Client: EC2Client,
+  instanceId: string,
+  tags: Tag[],
+  signal: AbortSignal | undefined,
+): Promise<void> {
   logger.debug(`Tagging '${instanceId}'`, { tags });
-  const ec2 = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
-  await ec2.send(new CreateTagsCommand({ Resources: [instanceId], Tags: tags }));
+  await ec2Client.send(new CreateTagsCommand({ Resources: [instanceId], Tags: tags }), { abortSignal: signal });
 }
 
-export async function untag(instanceId: string, tags: Tag[]): Promise<void> {
+async function untagEc2Runner(
+  ec2Client: EC2Client,
+  instanceId: string,
+  tags: Tag[],
+  signal: AbortSignal | undefined,
+): Promise<void> {
   logger.debug(`Untagging '${instanceId}'`, { tags });
-  const ec2 = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
-  await ec2.send(new DeleteTagsCommand({ Resources: [instanceId], Tags: tags }));
+  await ec2Client.send(new DeleteTagsCommand({ Resources: [instanceId], Tags: tags }), { abortSignal: signal });
 }
 
 const SPOT_ALLOCATION_STRATEGIES = [
@@ -157,55 +225,52 @@ interface AwsErrorLike extends Error {
   };
 }
 
-const RETRYABLE_AWS_ERROR_NAMES = new Set([
-  'EC2ThrottledException',
-  'InternalError',
-  'RequestLimitExceeded',
-  'RequestTimeout',
-  'RequestTimeoutException',
-  'ServiceUnavailable',
-  'Throttling',
-  'ThrottlingException',
-]);
+const MAX_ERROR_CAUSE_DEPTH = 10;
+const SAFE_FAILURE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9._-]{0,127}$/;
 
-const RETRYABLE_NETWORK_ERROR_CODES = new Set([
-  'EAI_AGAIN',
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ENETUNREACH',
-  'ENOTFOUND',
-  'ETIMEDOUT',
-]);
-
-function isRetryableAwsError(error: unknown, configuredRetryableErrors: string[]): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const awsError = error as AwsErrorLike;
-  if (isRetryableAwsErrorName(awsError.name, configuredRetryableErrors)) {
-    return true;
-  }
-
-  const httpStatusCode = awsError.$metadata?.httpStatusCode;
-  if (
-    awsError.$fault === 'server' ||
-    httpStatusCode === 429 ||
-    (httpStatusCode !== undefined && httpStatusCode >= 500) ||
-    (awsError.code !== undefined && RETRYABLE_NETWORK_ERROR_CODES.has(awsError.code))
-  ) {
-    return true;
-  }
-
-  if (awsError.cause && awsError.cause !== error) {
-    return isRetryableAwsError(awsError.cause, configuredRetryableErrors);
-  }
-
-  return false;
+function safeFailureIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_FAILURE_IDENTIFIER.test(value) ? value : undefined;
 }
 
-function isRetryableAwsErrorName(errorName: string, configuredRetryableErrors: string[]): boolean {
-  return configuredRetryableErrors.includes(errorName) || RETRYABLE_AWS_ERROR_NAMES.has(errorName);
+function failureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function requestFailureCodes(error: unknown): Ec2RunnerFailureCode[] {
+  const failureCodes = new Set<Ec2RunnerFailureCode>();
+  const visited = new Set<Error>();
+  let current = error;
+
+  for (let depth = 0; depth < MAX_ERROR_CAUSE_DEPTH && current instanceof Error; depth += 1) {
+    if (visited.has(current)) break;
+    visited.add(current);
+    const awsError = current as AwsErrorLike;
+    const errorName = safeFailureIdentifier(awsError.name);
+    const errorCode = safeFailureIdentifier(awsError.code);
+    if (errorName) failureCodes.add(`aws-name:${errorName}`);
+    if (errorCode) failureCodes.add(`aws-code:${errorCode}`);
+    if (awsError.$fault === 'client' || awsError.$fault === 'server') {
+      failureCodes.add(`aws-fault:${awsError.$fault}`);
+    }
+    const httpStatusCode = awsError.$metadata?.httpStatusCode;
+    if (typeof httpStatusCode === 'number' && Number.isSafeInteger(httpStatusCode) && httpStatusCode >= 0) {
+      failureCodes.add(`aws-http:${httpStatusCode}`);
+    }
+    current = awsError.cause;
+  }
+
+  return [...failureCodes];
+}
+
+function fleetFailureCodes(errors: FleetError[]): Ec2RunnerFailureCode[] {
+  return [
+    ...new Set(
+      errors.flatMap((error): Ec2RunnerFailureCode[] => {
+        const errorCode = safeFailureIdentifier(error.ErrorCode);
+        return errorCode ? [`aws-name:${errorCode}`] : [];
+      }),
+    ),
+  ];
 }
 
 // The instance_allocation_strategy variable accepts the union of spot and on-demand strategies,
@@ -234,8 +299,19 @@ function generateFleetOverrides(
 
   // Use override values if available, otherwise use parameter arrays
   const subnetsToUse = ec2OverrideConfig?.SubnetId ? [ec2OverrideConfig.SubnetId] : subnetIds;
-  const instanceTypesToUse = ec2OverrideConfig?.InstanceType ? [ec2OverrideConfig.InstanceType] : instancesTypes;
   const amiIdToUse = ec2OverrideConfig?.ImageId ?? amiId;
+
+  if (ec2OverrideConfig?.InstanceRequirements) {
+    return subnetsToUse.map(
+      (subnetId): FleetLaunchTemplateOverridesRequest => ({
+        SubnetId: subnetId,
+        ImageId: amiIdToUse,
+        ...ec2OverrideConfig,
+      }),
+    );
+  }
+
+  const instanceTypesToUse = ec2OverrideConfig?.InstanceType ? [ec2OverrideConfig.InstanceType] : instancesTypes;
 
   // Both the on-demand 'prioritized' and the spot 'capacity-optimized-prioritized' strategies
   // honor the Priority field of the launch template overrides.
@@ -310,7 +386,11 @@ function buildRunInstancesOverrides(
   return overrides;
 }
 
-export async function createRunner(runnerParameters: RunnerInputParameters): Promise<CreateRunnerResult> {
+async function createEc2Runner(
+  ec2Client: EC2Client,
+  runnerParameters: RunnerInputParameters,
+  signal: AbortSignal | undefined,
+): Promise<Ec2RunnerCreateResult> {
   logger.debug('Runner configuration.', {
     runner: {
       configuration: {
@@ -319,39 +399,44 @@ export async function createRunner(runnerParameters: RunnerInputParameters): Pro
     },
   });
 
-  const ec2Client = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
   let amiIdOverride: string | undefined;
   try {
     amiIdOverride = await getAmiIdOverride(runnerParameters);
   } catch (error) {
-    const retryable = isRetryableAwsError(error, runnerParameters.scaleErrors);
+    throwIfAborted(signal, error);
+    const failureCodes = requestFailureCodes(error);
     logger.warn('Runner creation failed before an EC2 request could be made.', {
-      error: error as Error,
-      retryable,
       failedInstanceCount: runnerParameters.numberOfRunners,
+      error: failureMessage(error),
+      failureCodes,
     });
-    return failedCreateRunnerResult(runnerParameters.numberOfRunners, retryable);
+    return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
   }
 
   // EC2 Fleet (CreateFleet) does not support launching instances onto dedicated hosts
   // for instance types like mac*.metal. Use RunInstances directly instead.
   if (runnerParameters.useDedicatedHost) {
     logger.info('Using RunInstances for dedicated host placement (CreateFleet does not support dedicated hosts).');
-    const result = await createInstancesWithRunInstances(runnerParameters, amiIdOverride, ec2Client);
+    const result = await createInstancesWithRunInstances(runnerParameters, amiIdOverride, ec2Client, signal);
     logger.info(`Created instance(s) via RunInstances: ${result.instances.join(',')}`);
     return result;
   }
 
   let fleet: CreateFleetResult;
   try {
-    fleet = await createInstances(runnerParameters, amiIdOverride, ec2Client);
+    fleet = await createInstances(runnerParameters, amiIdOverride, ec2Client, signal);
   } catch (error) {
-    const retryable = isRetryableAwsError(error, runnerParameters.scaleErrors);
-    logger.warn('Create fleet request failed.', { error: error as Error, retryable });
-    return failedCreateRunnerResult(runnerParameters.numberOfRunners, retryable);
+    throwIfAborted(signal, error);
+    const failureCodes = requestFailureCodes(error);
+    logger.warn('Create fleet request failed.', {
+      failedInstanceCount: runnerParameters.numberOfRunners,
+      error: failureMessage(error),
+      failureCodes,
+    });
+    return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
   }
 
-  const result = await processFleetResult(fleet, runnerParameters);
+  const result = await processFleetResult(fleet, runnerParameters, ec2Client, signal);
 
   logger.info(`Created instance(s): ${result.instances.join(',')}`);
 
@@ -361,7 +446,9 @@ export async function createRunner(runnerParameters: RunnerInputParameters): Pro
 async function processFleetResult(
   fleet: CreateFleetResult,
   runnerParameters: RunnerInputParameters,
-): Promise<CreateRunnerResult> {
+  ec2Client: EC2Client,
+  signal: AbortSignal | undefined,
+): Promise<Ec2RunnerCreateResult> {
   const instances: string[] = fleet.Instances?.flatMap((i) => i.InstanceIds?.flatMap((j) => j) || []) || [];
 
   if (instances.length === runnerParameters.numberOfRunners) {
@@ -388,70 +475,42 @@ async function processFleetResult(
       runnerParameters.ec2instanceCriteria.instanceAllocationStrategy,
       'on-demand',
     );
-    const onDemandResult = await createRunner({
-      ...runnerParameters,
-      numberOfRunners: numberOfInstances,
-      onDemandFailoverOnError: ['InsufficientInstanceCapacity'],
-      ec2instanceCriteria: {
-        ...runnerParameters.ec2instanceCriteria,
-        targetCapacityType: 'on-demand',
-        instanceAllocationStrategy: failoverAllocationStrategy,
+    const onDemandResult = await createEc2Runner(
+      ec2Client,
+      {
+        ...runnerParameters,
+        numberOfRunners: numberOfInstances,
+        onDemandFailoverOnError: ['InsufficientInstanceCapacity'],
+        ec2instanceCriteria: {
+          ...runnerParameters.ec2instanceCriteria,
+          targetCapacityType: 'on-demand',
+          instanceAllocationStrategy: failoverAllocationStrategy,
+        },
       },
-    });
+      signal,
+    );
     instances.push(...onDemandResult.instances);
     return {
       instances,
-      retryableErrorCount: onDemandResult.retryableErrorCount,
-      nonRetryableErrorCount: onDemandResult.nonRetryableErrorCount,
+      failedInstanceCount: onDemandResult.failedInstanceCount,
+      failureCodes: onDemandResult.failureCodes,
     };
   }
 
-  const configuredRetryableErrors = runnerParameters.scaleErrors;
-  const { fleetErrorsTriggeringRetry, fleetErrorsNotTriggeringRetry } = classifyFleetErrors(
-    fleet.Errors || [],
-    configuredRetryableErrors,
-  );
-
   const missingInstanceCount = runnerParameters.numberOfRunners - instances.length;
-  // CreateFleet errors describe failed launch-template overrides, not individual instances.
-  // A retryable override failure can therefore account for any number of missing instances.
-  const retryableErrorCount = fleetErrorsTriggeringRetry.length > 0 ? missingInstanceCount : 0;
-  const nonRetryableErrorCount = missingInstanceCount - retryableErrorCount;
+  const failureCodes = fleetFailureCodes(fleet.Errors || []);
 
   logger.warn('Create fleet did not create every requested instance.', {
-    data: fleet.Errors,
-    retryableErrorCount,
-    nonRetryableErrorCount,
-    fleetErrorsTriggeringRetry: structuredClone(fleetErrorsTriggeringRetry),
-    fleetErrorsNotTriggeringRetry: structuredClone(fleetErrorsNotTriggeringRetry),
+    failedInstanceCount: missingInstanceCount,
+    failureCodes,
   });
-  return { instances, retryableErrorCount, nonRetryableErrorCount };
-}
-
-function classifyFleetErrors(
-  errors: FleetError[],
-  configuredRetryableErrors: string[],
-): { fleetErrorsTriggeringRetry: FleetError[]; fleetErrorsNotTriggeringRetry: FleetError[] } {
-  return errors.reduce<{
-    fleetErrorsTriggeringRetry: FleetError[];
-    fleetErrorsNotTriggeringRetry: FleetError[];
-  }>(
-    (classifiedErrors, error) => {
-      if (isRetryableAwsErrorName(error.ErrorCode || '', configuredRetryableErrors)) {
-        classifiedErrors.fleetErrorsTriggeringRetry.push(error);
-      } else {
-        classifiedErrors.fleetErrorsNotTriggeringRetry.push(error);
-      }
-      return classifiedErrors;
-    },
-    { fleetErrorsTriggeringRetry: [], fleetErrorsNotTriggeringRetry: [] },
-  );
+  return { instances, failedInstanceCount: missingInstanceCount, failureCodes };
 }
 
 function processRunInstanceResult(
   result: RunInstancesCommandOutput,
   runnerParameters: RunnerInputParameters,
-): CreateRunnerResult {
+): Ec2RunnerCreateResult {
   const instances = result.Instances?.map((i) => i.InstanceId!).filter(Boolean) || [];
 
   if (instances.length === runnerParameters.numberOfRunners) {
@@ -465,25 +524,31 @@ function processRunInstanceResult(
     { data: result },
   );
 
-  const nonRetryableErrorCount = runnerParameters.numberOfRunners - instances.length;
+  const failedInstanceCount = runnerParameters.numberOfRunners - instances.length;
   logger.warn('RunInstances did not create every requested instance.', {
-    data: result,
-    retryable: false,
-    nonRetryableErrorCount,
+    failedInstanceCount,
   });
-  return { instances, retryableErrorCount: 0, nonRetryableErrorCount };
+  return { instances, failedInstanceCount, failureCodes: [] };
 }
 
-function successfulCreateRunnerResult(instances: string[]): CreateRunnerResult {
-  return { instances, retryableErrorCount: 0, nonRetryableErrorCount: 0 };
+function successfulCreateRunnerResult(instances: string[]): Ec2RunnerCreateResult {
+  return { instances, failedInstanceCount: 0, failureCodes: [] };
 }
 
-function failedCreateRunnerResult(failedInstanceCount: number, isRetryable: boolean): CreateRunnerResult {
+function failedCreateRunnerResult(
+  failedInstanceCount: number,
+  failureCodes: Ec2RunnerFailureCode[] = [],
+): Ec2RunnerCreateResult {
   return {
     instances: [],
-    retryableErrorCount: isRetryable ? failedInstanceCount : 0,
-    nonRetryableErrorCount: isRetryable ? 0 : failedInstanceCount,
+    failedInstanceCount,
+    failureCodes,
   };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, error: unknown): void {
+  if (signal?.aborted) signal.throwIfAborted();
+  if (error instanceof Error && error.name === 'AbortError') throw error;
 }
 
 async function getAmiIdOverride(runnerParameters: RunnerInputParameters): Promise<string | undefined> {
@@ -499,7 +564,7 @@ async function getAmiIdOverride(runnerParameters: RunnerInputParameters): Promis
     logger.debug(
       `Failed to lookup runner AMI ID from SSM parameter: ${runnerParameters.amiIdSsmParameterName}. ` +
         'Please ensure that the given parameter exists on this region and contains a valid runner AMI ID',
-      { error: e },
+      { failureCodes: requestFailureCodes(e) },
     );
     throw e;
   }
@@ -509,6 +574,7 @@ async function createInstances(
   runnerParameters: RunnerInputParameters,
   amiIdOverride: string | undefined,
   ec2Client: EC2Client,
+  signal: AbortSignal | undefined,
 ) {
   const tags = [
     { Key: 'ghr:Application', Value: 'github-action-runner' },
@@ -516,7 +582,6 @@ async function createInstances(
     { Key: 'ghr:Type', Value: runnerParameters.runnerType },
     { Key: 'ghr:Owner', Value: runnerParameters.runnerOwner },
   ];
-
   if (runnerParameters.tracingEnabled) {
     const traceId = tracer.getRootXrayTraceId();
     tags.push({ Key: 'ghr:trace_id', Value: traceId! });
@@ -528,64 +593,58 @@ async function createInstances(
     targetCapacityType,
   );
 
-  let fleet: CreateFleetResult;
-  try {
-    // see for spec https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateFleet.html
-    const createFleetCommand = new CreateFleetCommand({
-      LaunchTemplateConfigs: [
-        {
-          LaunchTemplateSpecification: {
-            LaunchTemplateName: runnerParameters.launchTemplateName,
-            Version: '$Default',
-          },
-          Overrides: generateFleetOverrides(
-            runnerParameters.subnets,
-            runnerParameters.ec2instanceCriteria.instanceTypes,
-            amiIdOverride,
-            runnerParameters.ec2OverrideConfig,
-            allocationStrategy,
-            runnerParameters.ec2instanceCriteria.instanceTypePriorities,
-          ),
+  // see for spec https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CreateFleet.html
+  const createFleetCommand = new CreateFleetCommand({
+    LaunchTemplateConfigs: [
+      {
+        LaunchTemplateSpecification: {
+          LaunchTemplateName: runnerParameters.launchTemplateName,
+          Version: '$Default',
         },
-      ],
-      ...(targetCapacityType === 'spot'
-        ? {
-            SpotOptions: {
-              MaxTotalPrice: runnerParameters.ec2instanceCriteria.maxSpotPrice,
-              AllocationStrategy: allocationStrategy as SpotAllocationStrategy,
-            },
-          }
-        : {
-            OnDemandOptions: {
-              AllocationStrategy: allocationStrategy as FleetOnDemandAllocationStrategy,
-            },
-          }),
-      TargetCapacitySpecification: {
-        TotalTargetCapacity: runnerParameters.numberOfRunners,
-        DefaultTargetCapacityType: targetCapacityType,
+        Overrides: generateFleetOverrides(
+          runnerParameters.subnets,
+          runnerParameters.ec2instanceCriteria.instanceTypes,
+          amiIdOverride,
+          runnerParameters.ec2OverrideConfig,
+          allocationStrategy,
+          runnerParameters.ec2instanceCriteria.instanceTypePriorities,
+        ),
       },
-      TagSpecifications: [
-        {
-          ResourceType: 'instance',
-          Tags: tags,
-        },
-        {
-          ResourceType: 'volume',
-          Tags: tags,
-        },
-        {
-          ResourceType: 'fleet',
-          Tags: tags,
-        },
-      ],
-      Type: 'instant',
-    });
-    logger.debug('CreateFleet request payload.', { payload: createFleetCommand.input });
-    fleet = await ec2Client.send(createFleetCommand);
-  } catch (e) {
-    logger.warn('Create fleet request failed.', { error: e as Error });
-    throw e;
-  }
+    ],
+    ...(targetCapacityType === 'spot'
+      ? {
+          SpotOptions: {
+            MaxTotalPrice: runnerParameters.ec2instanceCriteria.maxSpotPrice,
+            AllocationStrategy: allocationStrategy as SpotAllocationStrategy,
+          },
+        }
+      : {
+          OnDemandOptions: {
+            AllocationStrategy: allocationStrategy as FleetOnDemandAllocationStrategy,
+          },
+        }),
+    TargetCapacitySpecification: {
+      TotalTargetCapacity: runnerParameters.numberOfRunners,
+      DefaultTargetCapacityType: targetCapacityType,
+    },
+    TagSpecifications: [
+      {
+        ResourceType: 'instance',
+        Tags: tags,
+      },
+      {
+        ResourceType: 'volume',
+        Tags: tags,
+      },
+      {
+        ResourceType: 'fleet',
+        Tags: tags,
+      },
+    ],
+    Type: 'instant',
+  });
+  logger.debug('CreateFleet request payload.', { payload: createFleetCommand.input });
+  const fleet = await ec2Client.send(createFleetCommand, { abortSignal: signal });
   return fleet;
 }
 
@@ -593,14 +652,14 @@ async function createInstancesWithRunInstances(
   runnerParameters: RunnerInputParameters,
   amiIdOverride: string | undefined,
   ec2Client: EC2Client,
-): Promise<CreateRunnerResult> {
+  signal: AbortSignal | undefined,
+): Promise<Ec2RunnerCreateResult> {
   const tags = [
     { Key: 'ghr:Application', Value: 'github-action-runner' },
-    { Key: 'ghr:created_by', Value: runnerParameters.numberOfRunners === 1 ? 'scale-up-lambda' : 'pool-lambda' },
+    { Key: 'ghr:created_by', Value: runnerParameters.source },
     { Key: 'ghr:Type', Value: runnerParameters.runnerType },
     { Key: 'ghr:Owner', Value: runnerParameters.runnerOwner },
   ];
-
   if (runnerParameters.tracingEnabled) {
     const traceId = tracer.getRootXrayTraceId();
     tags.push({ Key: 'ghr:trace_id', Value: traceId! });
@@ -610,7 +669,7 @@ async function createInstancesWithRunInstances(
     logger.warn(
       'Spot instances are not supported with RunInstances. Please set targetCapacityType to on-demand for dedicated hosts.',
     );
-    return failedCreateRunnerResult(runnerParameters.numberOfRunners, false);
+    return failedCreateRunnerResult(runnerParameters.numberOfRunners);
   }
 
   try {
@@ -639,12 +698,17 @@ async function createInstancesWithRunInstances(
     });
 
     logger.debug('RunInstances request payload.', { payload: runInstancesCommand.input });
-    const result = await ec2Client.send(runInstancesCommand);
+    const result = await ec2Client.send(runInstancesCommand, { abortSignal: signal });
     return processRunInstanceResult(result, runnerParameters);
   } catch (error) {
-    const retryable = isRetryableAwsError(error, runnerParameters.scaleErrors);
-    logger.warn('RunInstances request failed for dedicated host.', { error: error as Error, retryable });
-    return failedCreateRunnerResult(runnerParameters.numberOfRunners, retryable);
+    throwIfAborted(signal, error);
+    const failureCodes = requestFailureCodes(error);
+    logger.warn('RunInstances request failed for dedicated host.', {
+      failedInstanceCount: runnerParameters.numberOfRunners,
+      error: failureMessage(error),
+      failureCodes,
+    });
+    return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
   }
 }
 
