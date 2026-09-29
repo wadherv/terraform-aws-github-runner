@@ -78,11 +78,15 @@ variables {
     }
   }
 
-  ssm = {
-    paths = {
-      root   = "/github-runner/provider-test"
-      tokens = "tokens"
-      config = "config"
+  storage_provider = {
+    aws = {
+      ssm = {
+        paths = {
+          root   = "/github-runner/provider-test"
+          tokens = "tokens"
+          config = "config"
+        }
+      }
     }
   }
 }
@@ -136,6 +140,15 @@ run "separates_control_plane_contract_from_ec2_resources" {
   assert {
     condition     = output.provider.policies.pool.managed_policy_enabled
     error_message = "An external AMI SSM parameter must enable the pool managed policy attachment at plan time."
+  }
+
+  assert {
+    condition = (
+      contains(output.provider.capabilities.scale_set.iam_statements.read_ami_parameter.actions, "ssm:GetParameter")
+      && contains(output.provider.capabilities.scale_set.iam_statements.read_ami_parameter.actions, "ssm:GetParameters")
+      && contains(output.provider.capabilities.scale_set.iam_statements.read_ami_parameter.resources, "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/ami-id")
+    )
+    error_message = "The scale-set compute role must read an external AMI parameter with both single and batched SSM actions."
   }
 
   assert {
@@ -197,6 +210,26 @@ run "separates_control_plane_contract_from_ec2_resources" {
     error_message = "The EC2 instance profile must use the common runner role name."
   }
 
+}
+
+run "includes_managed_ami_read_in_scale_set_contract" {
+  command = plan
+
+  variables {
+    config = merge(var.config, {
+      ami = merge(var.config.ami, {
+        id_ssm_parameter = null
+      })
+    })
+  }
+
+  assert {
+    condition = (
+      contains(output.provider.capabilities.scale_set.iam_statements.read_ami_parameter.actions, "ssm:GetParameters")
+      && output.provider.capabilities.scale_set.iam_statements.read_ami_parameter.resources != toset([])
+    )
+    error_message = "The scale-set compute role must read the module-managed AMI parameter."
+  }
 }
 
 run "accepts_partial_typed_compute_options" {
@@ -302,20 +335,24 @@ run "separates_provider_runner_and_ssm_tags" {
         }
       }
     }
-    ssm = {
-      paths = {
-        root   = "/github-runner/provider-test"
-        tokens = "tokens"
-        config = "config"
-      }
-      parameters = {
-        tags = {
-          Name                       = "ssm-name"
-          Scope                      = "ssm"
-          SsmOnly                    = "ssm"
-          "ghr:ami_name"             = "ssm-override"
-          "ghr:ami_creation_date"    = "ssm-override"
-          "ghr:ami_deprecation_time" = "ssm-override"
+    storage_provider = {
+      aws = {
+        ssm = {
+          paths = {
+            root   = "/github-runner/provider-test"
+            tokens = "tokens"
+            config = "config"
+          }
+          parameters = {
+            tags = {
+              Name                       = "ssm-name"
+              Scope                      = "ssm"
+              SsmOnly                    = "ssm"
+              "ghr:ami_name"             = "ssm-override"
+              "ghr:ami_creation_date"    = "ssm-override"
+              "ghr:ami_deprecation_time" = "ssm-override"
+            }
+          }
         }
       }
     }
@@ -399,6 +436,68 @@ run "separates_provider_runner_and_ssm_tags" {
       && aws_ssm_parameter.runner_ami_id[0].tags["ghr:ami_deprecation_time"] == ""
     )
     error_message = "The managed AMI parameter must preserve authoritative AMI metadata over SSM component tags."
+  }
+}
+
+run "network_interfaces_default_matches_associate_public_ipv4_address" {
+  command = plan
+
+  variables {
+    config = {
+      vpc_id                         = "vpc-12345678"
+      subnet_ids                     = ["subnet-12345678"]
+      instance_types                 = ["m5.large"]
+      associate_public_ipv4_address  = true
+      managed_security_group_enabled = true
+      binaries_syncer = {
+        enabled = false
+      }
+    }
+  }
+
+  assert {
+    condition = (
+      length(aws_launch_template.runner.network_interfaces) == 1
+      && aws_launch_template.runner.network_interfaces[0].associate_public_ip_address
+    )
+    error_message = "Leaving network_interfaces unset must keep deriving a single interface from associate_public_ipv4_address."
+  }
+}
+
+run "network_interfaces_accepts_explicit_configuration" {
+  command = plan
+
+  variables {
+    config = {
+      vpc_id         = "vpc-12345678"
+      subnet_ids     = ["subnet-12345678"]
+      instance_types = ["m5.large"]
+      binaries_syncer = {
+        enabled = false
+      }
+      network_interfaces = [
+        {
+          device_index       = 0
+          network_card_index = 0
+          interface_type     = "interface"
+          ipv4_prefix_count  = 1
+        },
+        {
+          device_index       = 1
+          network_card_index = 1
+          interface_type     = "interface"
+        },
+      ]
+    }
+  }
+
+  assert {
+    condition = (
+      length(aws_launch_template.runner.network_interfaces) == 2
+      && aws_launch_template.runner.network_interfaces[0].ipv4_prefix_count == 1
+      && aws_launch_template.runner.network_interfaces[1].network_card_index == 1
+    )
+    error_message = "Setting network_interfaces must render every configured interface on the launch template."
   }
 }
 

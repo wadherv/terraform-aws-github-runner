@@ -7,6 +7,19 @@ mock_provider "aws" {
 }
 
 variables {
+  storage_provider = {
+    aws = {
+      ssm = {
+        token_path           = "/github-runner/tokens"
+        token_path_arn       = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/tokens"
+        config_path          = "/github-runner/config"
+        config_path_arn      = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/config"
+        kms_key_id           = "arn:aws:kms:eu-west-1:123456789012:key/pool-test"
+        parameter_store_tags = "{}"
+      }
+    }
+  }
+
   config = {
     lambda = {
       log_level                      = "info"
@@ -24,7 +37,6 @@ variables {
       timeout                        = 60
       zip                            = "runners.zip"
       subnet_ids                     = []
-      parameter_store_tags           = "{}"
       principals = [{
         type        = "AWS"
         identifiers = ["arn:aws:iam::123456789012:role/local-testing"]
@@ -38,32 +50,22 @@ variables {
       ssl_verify = true
     }
     github_app_parameters = {
-      key_base64 = [
-        {
-          name = "/github-runner/key-base64"
-          arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/key-base64"
-        },
-        {
-          name = "/github-runner/key-base64-2"
-          arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/key-base64-2"
-        },
-      ]
-      id = [
-        {
-          name = "/github-runner/app-id"
-          arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/app-id"
-        },
-        {
-          name = "/github-runner/app-id-2"
-          arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/app-id-2"
-        },
-      ]
-      installation_id = [
-        null,
-        {
-          name = "/github-runner/installation-id-2"
-          arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/installation-id-2"
-        },
+      key_base64 = {
+        name = "/github-runner/key-base64"
+        arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/key-base64"
+      }
+      id = {
+        name = "/github-runner/app-id"
+        arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/app-id"
+      }
+      additional_apps_manifest = {
+        name = "/github-runner/additional-apps-manifest"
+        arn  = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/additional-apps-manifest"
+      }
+      additional_app_parameter_arns = [
+        "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/app-id-2",
+        "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/key-base64-2",
+        "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/installation-id-2",
       ]
     }
     runner = {
@@ -83,16 +85,11 @@ variables {
       schedule_expression_timezone = "UTC"
       size                         = 2
     }]
-    include_busy_runners           = false
-    role_permissions_boundary      = null
-    kms_key_id                     = "arn:aws:kms:eu-west-1:123456789012:key/pool-test"
-    role_path                      = "/"
-    ssm_token_path                 = "/github-runner/tokens"
-    ssm_token_path_arn             = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/tokens"
-    ssm_config_path                = "/github-runner/config"
-    arn_ssm_parameters_path_config = "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/config"
-    lambda_tags                    = {}
-    user_agent                     = "terraform-aws-github-runner"
+    include_busy_runners      = false
+    role_permissions_boundary = null
+    role_path                 = "/"
+    lambda_tags               = {}
+    user_agent                = "terraform-aws-github-runner"
   }
 
   runner_provider = {
@@ -146,14 +143,15 @@ run "provider_supplies_only_compute_specific_pool_configuration" {
 
   assert {
     condition = (
-      aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APP_ID_NAME"] == "/github-runner/app-id:/github-runner/app-id-2"
-      && aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APP_KEY_BASE64_NAME"] == "/github-runner/key-base64:/github-runner/key-base64-2"
-      && aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APP_INSTALLATION_ID_NAME"] == ":/github-runner/installation-id-2"
+      aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APP_ID_NAME"] == "/github-runner/app-id"
+      && aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APP_KEY_BASE64_NAME"] == "/github-runner/key-base64"
+      && aws_lambda_function.pool.environment[0].variables["PARAMETER_GITHUB_APPS_MANIFEST_NAME"] == "/github-runner/additional-apps-manifest"
       && contains(data.aws_iam_policy_document.pool_common.statement[2].resources, "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/app-id-2")
       && contains(data.aws_iam_policy_document.pool_common.statement[2].resources, "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/key-base64-2")
       && contains(data.aws_iam_policy_document.pool_common.statement[2].resources, "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/installation-id-2")
+      && contains(data.aws_iam_policy_document.pool_common.statement[2].resources, "arn:aws:ssm:eu-west-1:123456789012:parameter/github-runner/additional-apps-manifest")
     )
-    error_message = "Pool must pass every GitHub App parameter and grant access to every corresponding SSM ARN."
+    error_message = "Pool must receive the new GitHub App parameter format and grant access to every corresponding SSM ARN."
   }
 
   assert {

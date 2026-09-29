@@ -1,6 +1,8 @@
 variable "github_app" {
   description = <<EOF
-  GitHub app parameters, see your github app.
+  GitHub app parameters for the stable v1 interface, see your github app.
+  Omit this value when using the experimental v2 interface and provide the
+  app through `global_config_github` instead.
   You can optionally create the SSM parameters yourself and provide the ARN and name here, through the `*_ssm` attributes.
   If you chose to provide the configuration values directly here,
   please ensure the key is the base64-encoded `.pem` file (the output of `base64 app.private-key.pem`, not the content of `private-key.pem`).
@@ -17,22 +19,18 @@ variable "github_app" {
       arn  = string
       name = string
     }))
+    installation_id = optional(string)
+    installation_id_ssm = optional(object({
+      arn  = string
+      name = string
+    }))
     webhook_secret = optional(string)
     webhook_secret_ssm = optional(object({
       arn  = string
       name = string
     }))
   })
-
-  validation {
-    condition     = (var.github_app.key_base64 != null || var.github_app.key_base64_ssm != null) && (var.github_app.id != null || var.github_app.id_ssm != null) && (var.github_app.webhook_secret != null || var.github_app.webhook_secret_ssm != null)
-    error_message = <<EOF
-     You must set all of the following parameters, choosing one option from each pair:
-      - `key_base64` or `key_base64_ssm`
-      - `id` or `id_ssm`
-      - `webhook_secret` or `webhook_secret_ssm`
-    EOF
-  }
+  default = {}
 }
 
 
@@ -58,14 +56,6 @@ variable "additional_github_apps" {
     installation_id_ssm = optional(object({ arn = string, name = string }))
   }))
   default = []
-  validation {
-    condition = alltrue([
-      for app in var.additional_github_apps :
-      (app.key_base64 != null || app.key_base64_ssm != null) &&
-      (app.id != null || app.id_ssm != null)
-    ])
-    error_message = "Each additional GitHub app must provide either key_base64 or key_base64_ssm, and either id or id_ssm."
-  }
 }
 
 variable "prefix" {
@@ -86,6 +76,7 @@ variable "tags" {
   default     = {}
 }
 
+# tflint-ignore: terraform_unused_declarations
 variable "experimental_features" {
   description = <<-EOT
     Explicit acknowledgement for opt-in features whose schemas may change
@@ -153,6 +144,7 @@ variable "multi_runner_config" {
       pool_runner_owner                                              = optional(string, null)
       runner_as_root                                                 = optional(bool, false)
       runner_boot_time_in_minutes                                    = optional(number, 5)
+      scale_down_idle_confirmation_seconds                           = optional(number, 0)
       runner_disable_default_labels                                  = optional(bool, false)
       runner_extra_labels                                            = optional(list(string), [])
       runner_group_name                                              = optional(string, "Default")
@@ -190,6 +182,39 @@ variable "multi_runner_config" {
         amd_sev_snp           = optional(string)
         nested_virtualization = optional(string)
       }), null)
+      network_interfaces = optional(list(object({
+        associate_carrier_ip_address = optional(bool)
+        associate_public_ip_address  = optional(bool)
+        delete_on_termination        = optional(bool)
+        description                  = optional(string)
+        device_index                 = optional(number)
+        interface_type               = optional(string)
+        ipv4_address_count           = optional(number)
+        ipv4_addresses               = optional(list(string))
+        ipv4_prefix_count            = optional(number)
+        ipv4_prefixes                = optional(list(string))
+        ipv6_address_count           = optional(number)
+        ipv6_addresses               = optional(list(string))
+        ipv6_prefix_count            = optional(number)
+        ipv6_prefixes                = optional(list(string))
+        network_card_index           = optional(number)
+        network_interface_id         = optional(string)
+        primary_ipv6                 = optional(bool)
+        private_ip_address           = optional(string)
+        security_groups              = optional(list(string))
+        subnet_id                    = optional(string)
+        connection_tracking_specification = optional(object({
+          tcp_established_timeout = optional(number)
+          udp_stream_timeout      = optional(number)
+          udp_timeout             = optional(number)
+        }))
+        ena_srd_specification = optional(object({
+          ena_srd_enabled = optional(bool)
+          ena_srd_udp_specification = optional(object({
+            ena_srd_udp_enabled = optional(bool)
+          }))
+        }))
+      })), [])
       placement = optional(object({
         affinity                = optional(string)
         availability_zone       = optional(string)
@@ -231,6 +256,9 @@ variable "multi_runner_config" {
         schedule_expression_timezone = optional(string)
         size                         = number
       })), [])
+      ssm_ttl_seconds = optional(object({
+        tokens = optional(number, null)
+      }), {})
       job_retry = optional(object({
         enable             = optional(bool, false)
         delay_in_seconds   = optional(number, 300)
@@ -326,6 +354,7 @@ variable "multi_runner_config" {
           priority                = optional(number, 999)
           dynamic_labels_enabled  = optional(bool, false)
           awsDynamicLabelsPolicy = optional(object({
+            allowed_keys = optional(list(string), [])
             blocked_keys = optional(list(string), [])
             restricted_keys = optional(map(object({
               allowed = optional(list(string), [])
@@ -362,6 +391,7 @@ variable "multi_runner_config" {
               timeout                         = optional(number, null)
               schedule_expression             = optional(string, null)
               minimum_running_time_in_minutes = optional(number, null)
+              idle_confirmation_seconds       = optional(number, null)
               idle_config = optional(list(object({
                 cron             = string
                 timeZone         = string
@@ -398,37 +428,52 @@ variable "multi_runner_config" {
           }), {})
         }), {})
       }), null)
+      scale_set = optional(object({
+        name = string
+        runner = optional(object({
+          min_runners          = optional(number, 0)
+          max_runners          = optional(number, 10)
+          boot_time_in_minutes = optional(number, 10)
+        }), {})
+      }), null)
     }), {})
 
-    ssm = optional(object({
-      paths = optional(object({
-        root   = optional(string, null)
-        tokens = optional(string, null)
-        config = optional(string, null)
-      }), {})
-      tags = optional(map(string), {})
-      parameters = optional(object({
-        tags = optional(map(string), {})
-      }), {})
-      housekeeper = optional(object({
-        schedule_expression = optional(string, null)
-        state               = optional(string, null)
-        tags                = optional(map(string), {})
-        lambda = optional(object({
-          artifact = optional(object({
-            zip = optional(string, null)
-            s3 = optional(object({
-              key            = string
-              object_version = optional(string, null)
-            }), null)
+    storage_provider = optional(object({
+      aws = optional(object({
+        ssm = optional(object({
+          ttl_seconds = optional(object({
+            tokens = optional(number, null)
           }), {})
-          memory_size = optional(number, null)
-          timeout     = optional(number, null)
-        }), {})
-        config = optional(object({
-          tokenPath      = optional(string, null)
-          minimumDaysOld = optional(number, null)
-          dryRun         = optional(bool, null)
+          paths = optional(object({
+            root   = optional(string, null)
+            tokens = optional(string, null)
+            config = optional(string, null)
+          }), {})
+          tags = optional(map(string), {})
+          parameters = optional(object({
+            tags = optional(map(string), {})
+          }), {})
+          housekeeper = optional(object({
+            schedule_expression = optional(string, null)
+            state               = optional(string, null)
+            tags                = optional(map(string), {})
+            lambda = optional(object({
+              artifact = optional(object({
+                zip = optional(string, null)
+                s3 = optional(object({
+                  key            = string
+                  object_version = optional(string, null)
+                }), null)
+              }), {})
+              memory_size = optional(number, null)
+              timeout     = optional(number, null)
+            }), {})
+            config = optional(object({
+              tokenPath      = optional(string, null)
+              minimumDaysOld = optional(number, null)
+              dryRun         = optional(bool, null)
+            }), {})
+          }), {})
         }), {})
       }), {})
     }), {})
@@ -558,6 +603,39 @@ variable "multi_runner_config" {
             amd_sev_snp           = optional(string)
             nested_virtualization = optional(string)
           }), null)
+          network_interfaces = optional(list(object({
+            associate_carrier_ip_address = optional(bool)
+            associate_public_ip_address  = optional(bool)
+            delete_on_termination        = optional(bool)
+            description                  = optional(string)
+            device_index                 = optional(number)
+            interface_type               = optional(string)
+            ipv4_address_count           = optional(number)
+            ipv4_addresses               = optional(list(string))
+            ipv4_prefix_count            = optional(number)
+            ipv4_prefixes                = optional(list(string))
+            ipv6_address_count           = optional(number)
+            ipv6_addresses               = optional(list(string))
+            ipv6_prefix_count            = optional(number)
+            ipv6_prefixes                = optional(list(string))
+            network_card_index           = optional(number)
+            network_interface_id         = optional(string)
+            primary_ipv6                 = optional(bool)
+            private_ip_address           = optional(string)
+            security_groups              = optional(list(string))
+            subnet_id                    = optional(string)
+            connection_tracking_specification = optional(object({
+              tcp_established_timeout = optional(number)
+              udp_stream_timeout      = optional(number)
+              udp_timeout             = optional(number)
+            }))
+            ena_srd_specification = optional(object({
+              ena_srd_enabled = optional(bool)
+              ena_srd_udp_specification = optional(object({
+                ena_srd_udp_enabled = optional(bool)
+              }))
+            }))
+          })), [])
           placement = optional(object({
             affinity                = optional(string)
             availability_zone       = optional(string)
@@ -585,6 +663,7 @@ variable "multi_runner_config" {
       }), {})
     }), {})
   }))
+  default     = {}
   description = <<EOT
     Accepts either the stable v1 runner configuration shape or the provider-boundary v2 shape. Entries with `runner_config` use the v1 shape; entries without `runner_config` use the v2 shape. A v2 entry does not need matcher configuration. A v2 entry must be acknowledged with `experimental_features = ["multi-runner-v2"]`; the v2 shape is experimental and may change before graduation.
 
@@ -618,6 +697,7 @@ variable "multi_runner_config" {
         runner_additional_security_group_ids: "List of additional security groups IDs to apply to the runner. If added outside the multi_runner_config block, the additional security group(s) will be applied to all runner configs. If added inside the multi_runner_config, the additional security group(s) will be applied to the individual runner."
         runner_as_root: "Run the action runner under the root user. Variable `runner_run_as` will be ignored."
         runner_boot_time_in_minutes: "The minimum time for an EC2 runner to boot and register as a runner."
+        scale_down_idle_confirmation_seconds: "Number of seconds a runner must consistently report not-busy before scale-down terminates it. GitHub's busy flag can be stale, so a single not-busy reading is not sufficient evidence a runner is idle. 0 keeps the previous single-reading behaviour."
         runner_disable_default_labels: "Disable default labels for the runners (os, architecture and `self-hosted`). If enabled, the runner will only have the extra labels provided in `runner_extra_labels`. In case you on own start script is used, this configuration parameter needs to be parsed via SSM."
         runner_extra_labels: "Extra (custom) labels for the runners (GitHub). Separate each label by a comma. Labels checks on the webhook can be enforced by setting `multi_runner_config.matcherConfig.exactMatch`. GitHub read-only labels should not be provided."
         runner_group_name: "Name of the runner group."
@@ -648,6 +728,7 @@ variable "multi_runner_config" {
         block_device_mappings: "The EC2 instance block device configuration. Takes the following keys: `device_name`, `delete_on_termination`, `volume_type`, `volume_size`, `encrypted`, `iops`, `throughput`, `kms_key_id`, `snapshot_id`, `volume_initialization_rate`."
         job_retry: "Experimental! Can be removed / changed without trigger a major release. Configure job retries. The configuration enables job retries (for ephemeral runners). After creating the instances a message will be published to a job retry queue. The job retry check lambda is checking after a delay if the job is queued. If not the message will be published again on the scale-up (build queue). Using this feature can impact the rate limit of the GitHub app."
         pool_config: "The configuration for updating the pool. The `pool_size` to adjust to by the events triggered by the `schedule_expression`. For example you can configure a cron expression for week days to adjust the pool to 10 and another expression for the weekend to adjust the pool to 1. Use `schedule_expression_timezone` to override the schedule time zone (defaults to UTC)."
+        ssm_ttl_seconds.tokens: "Optional TTL in seconds for the SSM parameters holding the runner registration token / JIT config. When set, the parameters are created with an SSM expiration policy so SSM deletes them itself after the TTL passes. Requires the Advanced parameter tier for every token parameter, which incurs additional costs. Expiration is enforced asynchronously by SSM; the SSM housekeeper lambda remains as a backstop. Must be a positive number, and should comfortably exceed the runner boot time so the config does not expire before the instance reads it."
         iam_overrides: "Allows to (optionally) override the instance profile and runner role created by the module. Set `override_instance_profile` to true and provide the `instance_profile_name` to use an existing instance profile. Set `override_runner_role` to true and provide the `runner_role_arn` to use an existing role for the runner instances."
       }
       # V2 contract
@@ -676,7 +757,7 @@ variable "multi_runner_config" {
         bidirectionalLabelMatch: "If set to true, the runner labels and workflow job labels must be an exact two-way match (same set, any order, no extras or missing labels). This is stricter than `exactMatch` which only checks that workflow labels are a subset of runner labels. When false, if __any__ workflow label matches it will trigger the webhook."
         priority: "If set it defines the priority of the matcher, the matcher with the lowest priority will be evaluated first. Default is 999, allowed values 0-999."
         enableDynamicLabels: "Experimental! When true the dispatcher allows `ghr-*` dynamic labels for jobs routed to this runner. Default false."
-        awsDynamicLabelsPolicy: "Optional AWS dynamic label policy evaluated by the dispatcher. Only effective when `enableDynamicLabels = true`. Jobs whose provider dynamic labels violate every matching runner's policy are rejected with a 202 (a warning is logged). Evaluation: keys in `blocked_keys` are always rejected; keys in `restricted_keys` are allowed only when their value passes the rule; unlisted keys are allowed. Schema: `{ blocked_keys = [<key>], restricted_keys = { <key> = { allowed = [globs], denied = [globs], max = number|string } } }`. Keys use the dynamic label suffix, e.g. `instance-type` for `ghr-ec2-instance-type`."
+        awsDynamicLabelsPolicy: "Optional AWS dynamic label policy evaluated by the dispatcher. Only effective when `enableDynamicLabels = true`. Jobs whose provider dynamic labels violate every matching runner's policy are rejected with a 202 (a warning is logged). Evaluation: if `allowed_keys` is set, only those keys are accepted; keys in `blocked_keys` are always rejected (cannot be used together with `allowed_keys`); keys in `restricted_keys` are allowed only when their value passes the rule; a key not listed anywhere is allowed. Schema: `{ allowed_keys = [<key>], blocked_keys = [<key>], restricted_keys = { <key> = { allowed = [globs], denied = [globs], max = number|string } } }`. Keys use the dynamic label suffix, e.g. `instance-type` for `ghr-ec2-instance-type`."
       }
       redrive_build_queue: "Set options to attach (optional) a dead letter queue to the build queue, the queue between the webhook and the scale up lambda. You have the following options. 1. Disable by setting `enabled` to false. 2. Enable by setting `enabled` to `true`, `maxReceiveCount` to a number of max retries."
     }
@@ -689,6 +770,7 @@ variable "multi_runner_config" {
     )
     error_message = "Use one multi_runner_config shape per module invocation: provide either v1 entries with runner_config or v2 entries without runner_config, not both in the same map."
   }
+
 }
 
 variable "scale_up_lambda_memory_size" {
@@ -761,11 +843,6 @@ variable "log_class" {
   description = "The log class of the CloudWatch log groups. Valid values are `STANDARD` or `INFREQUENT_ACCESS`."
   type        = string
   default     = "STANDARD"
-
-  validation {
-    condition     = contains(["STANDARD", "INFREQUENT_ACCESS"], var.log_class)
-    error_message = "`log_class` must be either `STANDARD` or `INFREQUENT_ACCESS`."
-  }
 }
 
 variable "lambda_s3_bucket" {
@@ -805,28 +882,12 @@ variable "queue_selection_strategy" {
   description = "Strategy used to pick a queue when multiple runner configurations match a job equally well. `first` keeps the historical deterministic behaviour (the first matching queue by priority). `random` spreads jobs across the matching queues to avoid concentrating load on a single one. `all` scales up one runner per matching queue and lets the first to become available take the job (favouring speed over cost; this multiplies instance launches and runner registrations per job)."
   type        = string
   default     = "first"
-  validation {
-    condition     = contains(["first", "random", "all"], var.queue_selection_strategy)
-    error_message = "`queue_selection_strategy` value not valid. Valid values are 'first', 'random', 'all'."
-  }
 }
 
 variable "log_level" {
   description = "Logging level for lambda logging. Valid values are  'silly', 'trace', 'debug', 'info', 'warn', 'error', 'fatal'."
   type        = string
   default     = "info"
-  validation {
-    condition = anytrue([
-      var.log_level == "silly",
-      var.log_level == "trace",
-      var.log_level == "debug",
-      var.log_level == "info",
-      var.log_level == "warn",
-      var.log_level == "error",
-      var.log_level == "fatal",
-    ])
-    error_message = "`log_level` value not valid. Valid values are 'silly', 'trace', 'debug', 'info', 'warn', 'error', 'fatal'."
-  }
 }
 
 variable "lambda_runtime" {
@@ -839,10 +900,6 @@ variable "lambda_architecture" {
   description = "AWS Lambda architecture. Lambda functions using Graviton processors ('arm64') tend to have better price/performance than 'x86_64' functions. "
   type        = string
   default     = "arm64"
-  validation {
-    condition     = contains(["arm64", "x86_64"], var.lambda_architecture)
-    error_message = "`lambda_architecture` value is not valid, valid values are: `arm64` and `x86_64`."
-  }
 }
 
 variable "syncer_lambda_s3_key" {
@@ -912,11 +969,6 @@ variable "state_event_rule_binaries_syncer" {
   type        = string
   description = "Option to disable EventBridge Lambda trigger for the binary syncer, useful to stop automatic updates of binary distribution"
   default     = "ENABLED"
-
-  validation {
-    condition     = contains(["ENABLED", "DISABLED", "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"], var.state_event_rule_binaries_syncer)
-    error_message = "`state_event_rule_binaries_syncer` value is not valid, valid values are: `ENABLED`, `DISABLED`, `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS`."
-  }
 }
 
 variable "queue_encryption" {
@@ -930,10 +982,6 @@ variable "queue_encryption" {
     kms_data_key_reuse_period_seconds = null
     kms_master_key_id                 = null
     sqs_managed_sse_enabled           = true
-  }
-  validation {
-    condition     = var.queue_encryption == null || var.queue_encryption.sqs_managed_sse_enabled != null && var.queue_encryption.kms_master_key_id == null && var.queue_encryption.kms_data_key_reuse_period_seconds == null || var.queue_encryption.sqs_managed_sse_enabled == null && var.queue_encryption.kms_master_key_id != null
-    error_message = "Invalid configuration for `queue_encryption`. Valid configurations are encryption disabled, enabled via SSE. Or encryption via KMS."
   }
 }
 
@@ -949,13 +997,15 @@ variable "aws_region" {
 }
 
 variable "vpc_id" {
-  description = "The VPC for security groups of the action runners."
+  description = "The VPC for security groups of stable v1 action runners. Omit when using the experimental v2 interface."
   type        = string
+  default     = null
 }
 
 variable "subnet_ids" {
-  description = "List of subnets in which the action runners will be launched, the subnets needs to be subnets in the `vpc_id`."
+  description = "List of subnets in which stable v1 action runners will be launched. Omit when using the experimental v2 interface."
   type        = list(string)
+  default     = null
 }
 
 variable "enable_managed_runner_security_group" {
@@ -1161,10 +1211,6 @@ variable "matcher_config_parameter_store_tier" {
   description = "The tier of the parameter store for the matcher configuration. Valid values are `Standard`, and `Advanced`."
   type        = string
   default     = "Standard"
-  validation {
-    condition     = contains(["Standard", "Advanced"], var.matcher_config_parameter_store_tier)
-    error_message = "`matcher_config_parameter_store_tier` value is not valid, valid values are: `Standard`, and `Advanced`."
-  }
 }
 
 variable "metrics" {
@@ -1197,6 +1243,7 @@ variable "user_agent" {
   default     = "github-aws-runners"
 }
 
+# tflint-ignore: terraform_unused_declarations
 variable "iam_overrides" {
   description = "This map provides the possibility to override some IAM defaults. The following attributes are supported: `instance_profile_name` overrides the instance profile name used in the launch template. `runner_role_arn` overrides the IAM role ARN used for the runner instances."
   type = object({
@@ -1211,16 +1258,6 @@ variable "iam_overrides" {
     instance_profile_name     = null
     override_runner_role      = false
     runner_role_arn           = null
-  }
-
-  validation {
-    condition     = !var.iam_overrides.override_instance_profile || var.iam_overrides.instance_profile_name != null
-    error_message = "instance_profile_name must be provided when override_instance_profile is true."
-  }
-
-  validation {
-    condition     = !var.iam_overrides.override_runner_role || var.iam_overrides.runner_role_arn != null
-    error_message = "runner_role_arn must be provided when override_runner_role is true."
   }
 }
 

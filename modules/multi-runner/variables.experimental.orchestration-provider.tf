@@ -28,6 +28,7 @@ variable "global_config_orchestration_provider" {
         lambda.scale.down.timeout: "Timeout in seconds for the scale-down Lambda."
         lambda.scale.down.schedule_expression: "Schedule expression for scale-down processing."
         lambda.scale.down.minimum_running_time_in_minutes: "Minimum runner lifetime before scale-down."
+        lambda.scale.down.idle_confirmation_seconds: "Seconds a runner must consistently report not-busy before scale-down terminates it; 0 disables the confirmation window."
         lambda.scale.down.idle_config: "Scheduled minimum idle-runner pool settings."
         lambda.scale.down.idle_config.cron: "Cron expression defining when the idle-runner count applies."
         lambda.scale.down.idle_config.timeZone: "Time zone used to evaluate the idle-runner schedule."
@@ -109,6 +110,7 @@ variable "global_config_orchestration_provider" {
             timeout                         = optional(number, 60)
             schedule_expression             = optional(string, "cron(*/5 * * * ? *)")
             minimum_running_time_in_minutes = optional(number, null)
+            idle_confirmation_seconds       = optional(number, 0)
             idle_config = optional(list(object({
               cron             = string
               timeZone         = string
@@ -171,6 +173,78 @@ variable "global_config_orchestration_provider" {
           sqs_managed_sse_enabled           = true
         })
       }), {})
+
+    }), {})
+
+    scale_set = optional(object({
+      grouping = optional(object({
+        strategy = optional(string, "compute_provider")
+        custom = optional(object({
+          groups = map(object({
+            runner_configs = set(string)
+          }))
+        }), null)
+      }), {})
+      container = optional(object({
+        image                             = optional(string, null)
+        user                              = optional(string, "10001:10001")
+        health_port                       = optional(number, 8080)
+        health_path                       = optional(string, "/healthz")
+        health_check_command              = optional(list(string), null)
+        health_check_interval             = optional(number, 30)
+        health_check_timeout              = optional(number, 5)
+        health_check_retries              = optional(number, 3)
+        health_check_start_period         = optional(number, 30)
+        health_stale_after_seconds        = optional(number, 180)
+        shutdown_timeout_seconds          = optional(number, 110)
+        session_close_timeout_seconds     = optional(number, 10)
+        reconnect_initial_backoff_seconds = optional(number, 1)
+        reconnect_max_backoff_seconds     = optional(number, 30)
+        stop_timeout_seconds              = optional(number, 120)
+      }), {})
+      config_store = optional(object({
+        path_prefix = optional(string, null)
+        tier        = optional(string, "Standard")
+        tags        = optional(map(string), {})
+      }), {})
+      ecs = optional(object({
+        cluster = optional(object({
+          mode               = optional(string, "managed")
+          arn                = optional(string, null)
+          name               = optional(string, null)
+          container_insights = optional(bool, true)
+        }), {})
+        task = optional(object({
+          cpu              = optional(number, 512)
+          memory           = optional(number, 1024)
+          cpu_architecture = optional(string, "X86_64")
+          ephemeral_storage = optional(object({
+            size_in_gib = number
+          }), null)
+        }), {})
+        service = optional(object({
+          platform_version = optional(string, "LATEST")
+        }), {})
+        iam = optional(object({
+          path                 = optional(string, "/")
+          permissions_boundary = optional(string, null)
+        }), {})
+      }), {})
+      network = optional(object({
+        vpc_id     = optional(string, null)
+        subnet_ids = optional(set(string), null)
+        https_egress = optional(object({
+          ipv4_cidrs = optional(set(string), ["0.0.0.0/0"])
+          ipv6_cidrs = optional(set(string), [])
+        }), {})
+      }), {})
+      logging = optional(object({
+        retention_in_days = optional(number, 180)
+        kms_key_id        = optional(string, null)
+        log_group_class   = optional(string, "STANDARD")
+        tags              = optional(map(string), {})
+      }), {})
+      tags = optional(map(string), {})
     }), {})
   })
   default = {}

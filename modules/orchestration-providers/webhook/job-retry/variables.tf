@@ -24,15 +24,16 @@ variable "config" {
     - `github.enterprise_server.url`: Optional GitHub Enterprise Server URL.
     - `github.enterprise_server.ssl_verify`: Enables TLS certificate verification for GitHub Enterprise Server requests.
     - `github.user_agent`: Optional User-Agent sent to GitHub.
-    - `github.app_parameters.key_base64`: Ordered Parameter Store references for GitHub App private keys.
-    - `github.app_parameters.id`: Ordered Parameter Store references for GitHub App IDs.
-    - `github.app_parameters.installation_id`: Ordered optional Parameter Store references for GitHub App installation IDs.
+    - `github.app_parameters.key_base64`: Parameter Store reference for the primary GitHub App private key.
+    - `github.app_parameters.id`: Parameter Store reference for the primary GitHub App ID.
+    - `github.app_parameters.additional_apps_manifest`: Optional Parameter Store reference containing the additional GitHub App manifest.
+    - `github.app_parameters.additional_app_parameter_arns`: ARNs of the additional GitHub App credential parameters.
     - `queue.build`: URL and ARN of the build queue to which retry messages are published.
     - `queue.kms_key_id`: Optional KMS key ARN used to encrypt the build queue. This is distinct from the Parameter Store key.
     - `queue.event_source_mapping.batch_size`: Maximum records delivered per job-retry invocation.
     - `queue.event_source_mapping.maximum_batching_window_in_seconds`: Maximum event batching window.
     - `queue.encryption`: Server-side encryption configuration for the retry queue.
-    - `ssm.kms_key_id`: Optional KMS key ARN used by the job-retry IAM policy. Its value may be unknown until apply.
+    - `storage_provider.aws.ssm.kms_key_id`: Optional KMS key ARN used by the job-retry IAM policy. Its value may be unknown until apply.
     - `observability.logs`: Logging level, retention, encryption, and log-class configuration.
     - `observability.tracing`: Lambda X-Ray and tracing-helper configuration.
     - `observability.metrics`: Metrics enablement, namespace, and job-retry metric configuration.
@@ -85,9 +86,13 @@ variable "config" {
       })
       user_agent = optional(string, null)
       app_parameters = object({
-        key_base64      = list(map(string))
-        id              = list(map(string))
-        installation_id = list(object({ name = string, arn = string }))
+        key_base64 = map(string)
+        id         = map(string)
+        additional_apps_manifest = optional(object({
+          name = string
+          arn  = string
+        }), null)
+        additional_app_parameter_arns = optional(list(string), [])
       })
     })
     queue = object({
@@ -105,9 +110,6 @@ variable "config" {
         kms_master_key_id                 = optional(string, null)
         kms_data_key_reuse_period_seconds = optional(number, null)
       })
-    })
-    ssm = object({
-      kms_key_id = optional(string, null)
     })
     observability = object({
       logs = object({
@@ -143,5 +145,19 @@ variable "config" {
     })
   })
 
+  nullable = false
+}
+
+variable "storage_provider" {
+  description = "Resolved storage-provider configuration and capability used by the job-retry Lambda."
+  type = object({
+    aws = object({
+      ssm = object({
+        kms_key_id = optional(string, null)
+      })
+    })
+    environment_variables = optional(map(string), {})
+    iam_policy_json       = optional(string, null)
+  })
   nullable = false
 }

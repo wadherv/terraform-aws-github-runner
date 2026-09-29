@@ -20,6 +20,27 @@ output "runners_map" {
     }
   }
 }
+output "runners_map_v2" {
+  value = { for runner_key, runner in module.runner_configs : runner_key => {
+    runner                 = runner.runner
+    orchestration_provider = runner.orchestration_provider
+    scale_up               = runner.scale_up
+    scale_down             = runner.scale_down
+    pool                   = runner.pool
+    provider               = runner.provider
+    }
+  }
+}
+
+output "scale_set" {
+  description = "Shared scale-set orchestration resources, or null when no runner configuration selects scale_set."
+  value = length(module.orchestration_scale_set) == 0 ? null : {
+    cluster                      = module.orchestration_scale_set[0].cluster
+    controller_groups            = module.orchestration_scale_set[0].controller_groups
+    reconciler_config_parameters = module.orchestration_scale_set[0].reconciler_config_parameters
+    resolved_container_image     = module.orchestration_scale_set[0].resolved_container_image
+  }
+}
 
 output "binaries_syncer_map" {
   value = { for runner_binary_key, runner_binary in module.runner_binaries : runner_binary_key => {

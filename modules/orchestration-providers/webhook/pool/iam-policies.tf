@@ -10,10 +10,10 @@ data "aws_iam_policy_document" "pool_common" {
     ]
 
     resources = [
-      var.config.ssm_token_path_arn,
-      "${var.config.ssm_token_path_arn}/*",
-      var.config.arn_ssm_parameters_path_config,
-      "${var.config.arn_ssm_parameters_path_config}/*",
+      var.storage_provider.aws.ssm.token_path_arn,
+      "${var.storage_provider.aws.ssm.token_path_arn}/*",
+      var.storage_provider.aws.ssm.config_path_arn,
+      "${var.storage_provider.aws.ssm.config_path_arn}/*",
     ]
   }
 
@@ -28,8 +28,8 @@ data "aws_iam_policy_document" "pool_common" {
     ]
 
     resources = [
-      var.config.arn_ssm_parameters_path_config,
-      "${var.config.arn_ssm_parameters_path_config}/*",
+      var.storage_provider.aws.ssm.config_path_arn,
+      "${var.storage_provider.aws.ssm.config_path_arn}/*",
     ]
   }
 
@@ -43,14 +43,17 @@ data "aws_iam_policy_document" "pool_common" {
     ]
 
     resources = concat(
-      [for p in var.config.github_app_parameters.id : p.arn],
-      [for p in var.config.github_app_parameters.key_base64 : p.arn],
-      [for p in var.config.github_app_parameters.installation_id : p.arn if p != null],
+      [
+        var.config.github_app_parameters.id.arn,
+        var.config.github_app_parameters.key_base64.arn,
+      ],
+      var.config.github_app_parameters.additional_app_parameter_arns,
+      var.config.github_app_parameters.additional_apps_manifest != null ? [var.config.github_app_parameters.additional_apps_manifest.arn] : [],
     )
   }
 
   dynamic "statement" {
-    for_each = var.config.kms_key_id == null ? [] : [var.config.kms_key_id]
+    for_each = var.storage_provider.aws.ssm.kms_key_id != null ? [var.storage_provider.aws.ssm.kms_key_id] : []
     iterator = kms_key
 
     content {

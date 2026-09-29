@@ -155,6 +155,7 @@ function getRunnerInfo(runningInstances: DescribeInstancesResult) {
             orphan: i.Tags?.find((e) => e.Key === 'ghr:orphan')?.Value === 'true',
             githubRunnerId: i.Tags?.find((e) => e.Key === 'ghr:github_runner_id')?.Value as string,
             bypassRemoval: i.Tags?.find((e) => e.Key === 'ghr:bypass-removal')?.Value === 'true',
+            idleDetectedAt: i.Tags?.find((e) => e.Key === 'ghr:idle_detected_at')?.Value,
           });
         }
       }
@@ -208,6 +209,7 @@ interface AwsErrorLike extends Error {
   $fault?: 'client' | 'server';
   $metadata?: {
     httpStatusCode?: number;
+    requestId?: string;
   };
 }
 
@@ -218,8 +220,18 @@ function safeFailureIdentifier(value: unknown): string | undefined {
   return typeof value === 'string' && SAFE_FAILURE_IDENTIFIER.test(value) ? value : undefined;
 }
 
-function failureMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function failureDetails(error: unknown): Record<string, unknown> {
+  if (!(error instanceof Error)) return { errorMessage: String(error) };
+
+  const awsError = error as AwsErrorLike;
+  return {
+    errorName: error.name,
+    errorMessage: error.message,
+    ...(awsError.code === undefined ? {} : { errorCode: awsError.code }),
+    ...(awsError.$fault === undefined ? {} : { errorFault: awsError.$fault }),
+    ...(awsError.$metadata?.httpStatusCode === undefined ? {} : { httpStatusCode: awsError.$metadata.httpStatusCode }),
+    ...(awsError.$metadata?.requestId === undefined ? {} : { requestId: awsError.$metadata.requestId }),
+  };
 }
 
 function requestFailureCodes(error: unknown): Ec2RunnerFailureCode[] {
@@ -393,7 +405,7 @@ async function createEc2Runner(
     const failureCodes = requestFailureCodes(error);
     logger.warn('Runner creation failed before an EC2 request could be made.', {
       failedInstanceCount: runnerParameters.numberOfRunners,
-      error: failureMessage(error),
+      ...failureDetails(error),
       failureCodes,
     });
     return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
@@ -416,7 +428,7 @@ async function createEc2Runner(
     const failureCodes = requestFailureCodes(error);
     logger.warn('Create fleet request failed.', {
       failedInstanceCount: runnerParameters.numberOfRunners,
-      error: failureMessage(error),
+      ...failureDetails(error),
       failureCodes,
     });
     return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
@@ -565,6 +577,7 @@ async function createInstances(
   const tags = [
     { Key: 'ghr:Application', Value: 'github-action-runner' },
     { Key: 'ghr:created_by', Value: runnerParameters.source },
+    { Key: 'ghr:environment', Value: runnerParameters.environment },
     { Key: 'ghr:Type', Value: runnerParameters.runnerType },
     { Key: 'ghr:Owner', Value: runnerParameters.runnerOwner },
   ];
@@ -643,6 +656,7 @@ async function createInstancesWithRunInstances(
   const tags = [
     { Key: 'ghr:Application', Value: 'github-action-runner' },
     { Key: 'ghr:created_by', Value: runnerParameters.source },
+    { Key: 'ghr:environment', Value: runnerParameters.environment },
     { Key: 'ghr:Type', Value: runnerParameters.runnerType },
     { Key: 'ghr:Owner', Value: runnerParameters.runnerOwner },
   ];
@@ -691,7 +705,7 @@ async function createInstancesWithRunInstances(
     const failureCodes = requestFailureCodes(error);
     logger.warn('RunInstances request failed for dedicated host.', {
       failedInstanceCount: runnerParameters.numberOfRunners,
-      error: failureMessage(error),
+      ...failureDetails(error),
       failureCodes,
     });
     return failedCreateRunnerResult(runnerParameters.numberOfRunners, failureCodes);
