@@ -129,6 +129,12 @@ variable "instance_target_capacity_type" {
   }
 }
 
+variable "instance_capacity_type_override_enabled" {
+  description = "Allows a per-job label to override capacity type to `on-demand` at launch time. When true, an additional launch template variant without the Spot-request tag specification is created so an on-demand override never conflicts with it."
+  type        = bool
+  default     = false
+}
+
 variable "instance_allocation_strategy" {
   description = "The allocation strategy for creating instances. For spot, AWS recommends `price-capacity-optimized`; for on-demand, use `lowest-price` or `prioritized`. The AWS default is `lowest-price`."
   type        = string
@@ -229,20 +235,24 @@ variable "github_app_parameters" {
   description = <<-EOF
     Parameter Store for GitHub App Parameters.
 
-    Supports multiple GitHub Apps for random API rate limit distribution.
-    Each list element corresponds to one GitHub App and is a map containing
-    `name` and `arn` keys referencing SSM parameters. The first element is the
-    primary app (the one whose webhook secret is used for incoming webhook
-    validation). All apps must be installed on the same repositories/organizations.
-
-    The control-plane lambdas (scale-up, scale-down, pool, job-retry) randomly
-    select an app from the list for each GitHub API call, distributing rate
-    limit consumption across all configured apps.
+    Supports multiple GitHub Apps for API rate limit distribution. `id` and
+    `key_base64` reference the primary app (the one whose webhook secret is
+    used for incoming webhook validation). Additional apps are delivered to
+    the lambdas via `additional_apps_manifest`, an SSM parameter whose value
+    lists the per-app credential parameter names, keeping the lambda
+    environment size constant regardless of app count.
+    `additional_app_parameter_arns` carries the ARNs of every additional app
+    credential parameter for the lambda IAM policies. All apps must be
+    installed on the same repositories/organizations as the primary app.
   EOF
   type = object({
-    key_base64      = list(map(string))
-    id              = list(map(string))
-    installation_id = list(object({ name = string, arn = string }))
+    key_base64 = map(string)
+    id         = map(string)
+    additional_apps_manifest = optional(object({
+      name = string
+      arn  = string
+    }), null)
+    additional_app_parameter_arns = optional(list(string), [])
   })
 }
 
@@ -268,6 +278,17 @@ variable "runner_boot_time_in_minutes" {
   description = "The minimum time for an EC2 runner to boot and register as a runner."
   type        = number
   default     = 5
+}
+
+variable "scale_down_idle_confirmation_seconds" {
+  description = "Number of seconds a runner must consistently report not-busy before scale-down terminates it. GitHub's busy flag can be stale (it can read false for a runner that is actively executing a job), so a single not-busy reading is not sufficient evidence a runner is idle. Set to at least one scale-down schedule interval to require two consecutive not-busy evaluations; a busy reading resets the window. 0 keeps the previous single-reading behaviour."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.scale_down_idle_confirmation_seconds >= 0
+    error_message = "The idle confirmation window must be 0 (disabled) or a positive number of seconds."
+  }
 }
 
 variable "runner_disable_default_labels" {
@@ -667,6 +688,20 @@ variable "ssm_paths" {
   })
 }
 
+variable "ssm_ttl_seconds" {
+  description = "Set tokens to the optional TTL in seconds for the SSM parameters holding the runner registration token / JIT config. When set, the parameters are created with an SSM expiration policy so SSM deletes them itself after the TTL passes. Requires the Advanced parameter tier for every token parameter, which incurs additional costs. Expiration is enforced asynchronously by SSM; the SSM housekeeper lambda remains as a backstop. Must be a positive number, and should comfortably exceed the runner boot time so the config does not expire before the instance reads it."
+  type = object({
+    tokens = optional(number, null)
+  })
+  default  = {}
+  nullable = false
+
+  validation {
+    condition     = var.ssm_ttl_seconds.tokens == null ? true : var.ssm_ttl_seconds.tokens > 0
+    error_message = "`ssm_ttl_seconds.tokens` must be a positive number."
+  }
+}
+
 variable "runner_name_prefix" {
   description = "The prefix used for the GitHub runner name. The prefix will be used in the default start script to prefix the instance name when register the runner in GitHub. The value is available via an EC2 tag 'ghr:runner_name_prefix'."
   type        = string
@@ -711,8 +746,8 @@ variable "cpu_options" {
 
   validation {
     condition = var.cpu_options == null ? true : (
-      (var.cpu_options.amd_sev_snp == null || contains(["enabled", "disabled"], var.cpu_options.amd_sev_snp)) &&
-      (var.cpu_options.nested_virtualization == null || contains(["enabled", "disabled"], var.cpu_options.nested_virtualization))
+      (var.cpu_options.amd_sev_snp == null ? true : contains(["enabled", "disabled"], var.cpu_options.amd_sev_snp)) &&
+      (var.cpu_options.nested_virtualization == null ? true : contains(["enabled", "disabled"], var.cpu_options.nested_virtualization))
     )
     error_message = "When set, cpu_options.amd_sev_snp and cpu_options.nested_virtualization must be one of: enabled, disabled."
   }
@@ -752,6 +787,44 @@ variable "associate_public_ipv4_address" {
   description = "Associate public IPv4 with the runner. Only tested with IPv4"
   type        = bool
   default     = false
+}
+
+variable "network_interfaces" {
+  description = "Advanced network interface configuration for the runner launch template. See https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/launch_template#network-interfaces for details. Leave unset (default) to keep using associate_public_ipv4_address for a simple single-interface setup; set this to fully control one or more interfaces."
+  type = list(object({
+    associate_carrier_ip_address = optional(bool)
+    associate_public_ip_address  = optional(bool)
+    delete_on_termination        = optional(bool)
+    description                  = optional(string)
+    device_index                 = optional(number)
+    interface_type               = optional(string)
+    ipv4_address_count           = optional(number)
+    ipv4_addresses               = optional(list(string))
+    ipv4_prefix_count            = optional(number)
+    ipv4_prefixes                = optional(list(string))
+    ipv6_address_count           = optional(number)
+    ipv6_addresses               = optional(list(string))
+    ipv6_prefix_count            = optional(number)
+    ipv6_prefixes                = optional(list(string))
+    network_card_index           = optional(number)
+    network_interface_id         = optional(string)
+    primary_ipv6                 = optional(bool)
+    private_ip_address           = optional(string)
+    security_groups              = optional(list(string))
+    subnet_id                    = optional(string)
+    connection_tracking_specification = optional(object({
+      tcp_established_timeout = optional(number)
+      udp_stream_timeout      = optional(number)
+      udp_timeout             = optional(number)
+    }))
+    ena_srd_specification = optional(object({
+      ena_srd_enabled = optional(bool)
+      ena_srd_udp_specification = optional(object({
+        ena_srd_udp_enabled = optional(bool)
+      }))
+    }))
+  }))
+  default = []
 }
 
 variable "ssm_housekeeper" {

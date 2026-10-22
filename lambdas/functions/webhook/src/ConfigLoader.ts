@@ -1,9 +1,9 @@
-import { getParameter, getParameters } from '@aws-github-runner/aws-ssm-util';
+import { getGitHubWebhookSecretStore, getRunnerMatcherConfigStore } from '@aws-github-runner/storage-providers';
 import { RunnerMatcherConfig } from './sqs';
 import { logger } from '@aws-github-runner/aws-powertools-util';
 
 /**
- * Base class for loading configuration from environment variables and SSM parameters.
+ * Base class for loading configuration from environment variables and configuration stores.
  *
  * @remarks
  * To avoid usages or checking values can be undefined we assume that configuration is
@@ -17,18 +17,17 @@ abstract class BaseConfig {
 
   static async load<T extends BaseConfig>(): Promise<T> {
     if (!this.instance) {
-      this.instance = new (this as unknown as { new (): T })();
-      await this.instance.loadConfig();
+      // Cache only a successful load.
+      const instance = new (this as unknown as { new (): T })();
+      await instance.loadConfig();
 
-      if (this.instance.configLoadingErrors.length > 0) {
-        logger.debug('Failed to load config', {
-          config: this.instance.logOjbect,
-          errors: this.instance.configLoadingErrors,
-        });
-        throw new Error(`Failed to load config: ${this.instance.configLoadingErrors.join(', ')}`);
+      if (instance.configLoadingErrors.length > 0) {
+        logger.error('Failed to load config', { errors: instance.configLoadingErrors });
+        throw new Error(`Failed to load config: ${instance.configLoadingErrors.join(', ')}`);
       }
 
-      logger.debug('Config loaded', { config: this.instance.logOjbect() });
+      this.instance = instance;
+      logger.debug('Config loaded', { config: instance.logOjbect() });
     } else {
       logger.debug('Config already loaded', { config: this.instance.logOjbect() });
     }
@@ -54,19 +53,15 @@ abstract class BaseConfig {
     }
   }
 
-  protected async loadParameter(paramPath: string, propertyName: keyof this): Promise<void> {
-    logger.debug(`Loading parameter for ${String(propertyName)} from path ${paramPath}`);
-    await getParameter(paramPath)
-      .then((value) => {
-        this.loadProperty(propertyName, value);
-      })
-      .catch((error) => {
-        const errorMessage = `Failed to load parameter for ${String(propertyName)} from path ${paramPath}: ${(error as Error).message}`;
-        this.configLoadingErrors.push(errorMessage);
-      });
+  protected async loadStoredProperty(propertyName: keyof this, getValue: () => Promise<string>): Promise<void> {
+    try {
+      this.loadProperty(propertyName, await getValue());
+    } catch (error) {
+      this.configLoadingErrors.push((error as Error).message);
+    }
   }
 
-  private loadProperty(propertyName: keyof this, value: string) {
+  protected loadProperty(propertyName: keyof this, value: string) {
     try {
       this[propertyName] = JSON.parse(value) as unknown as this[keyof this];
     } catch {
@@ -96,38 +91,11 @@ abstract class MatcherAwareConfig extends BaseConfig {
   // across the matching queues to avoid concentrating load on a single one.
   queueSelectionStrategy: QueueSelectionStrategy = 'first';
 
-  protected async loadMatcherConfig(paramPathsEnv: string) {
-    if (!paramPathsEnv || paramPathsEnv === 'undefined' || paramPathsEnv === 'null' || !paramPathsEnv.includes(':')) {
-      // Single path or invalid string → load directly
-      await this.loadParameter(paramPathsEnv, 'matcherConfig');
-      return;
-    }
-
-    const paths = paramPathsEnv
-      .split(':')
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    // Batch fetch all matcher config paths in a single SSM API call
+  protected async loadMatcherConfig() {
     try {
-      const params = await getParameters(paths);
-      let combinedString = '';
-      for (const path of paths) {
-        const value = params.get(path);
-        if (value) {
-          combinedString += value;
-        } else {
-          this.configLoadingErrors.push(
-            `Failed to load parameter for matcherConfig from path ${path}: Parameter not found`,
-          );
-        }
-      }
-
-      if (combinedString) {
-        this.matcherConfig = JSON.parse(combinedString);
-      }
+      this.loadProperty('matcherConfig', await getRunnerMatcherConfigStore().get());
     } catch (error) {
-      this.configLoadingErrors.push(`Failed to load/parse combined matcher config: ${(error as Error).message}`);
+      this.configLoadingErrors.push((error as Error).message);
     }
   }
 }
@@ -142,8 +110,8 @@ export class ConfigWebhook extends MatcherAwareConfig {
     this.loadEnvVar(process.env.QUEUE_SELECTION_STRATEGY, 'queueSelectionStrategy', 'first');
 
     await Promise.all([
-      this.loadMatcherConfig(process.env.PARAMETER_RUNNER_MATCHER_CONFIG_PATH),
-      this.loadParameter(process.env.PARAMETER_GITHUB_APP_WEBHOOK_SECRET, 'webhookSecret'),
+      this.loadMatcherConfig(),
+      this.loadStoredProperty('webhookSecret', () => getGitHubWebhookSecretStore().get()),
     ]);
 
     validateWebhookSecret(this);
@@ -160,7 +128,7 @@ export class ConfigWebhookEventBridge extends BaseConfig {
   async loadConfig(): Promise<void> {
     this.loadEnvVar(process.env.ACCEPT_EVENTS, 'allowedEvents', []);
     this.loadEnvVar(process.env.EVENT_BUS_NAME, 'eventBusName');
-    await this.loadParameter(process.env.PARAMETER_GITHUB_APP_WEBHOOK_SECRET, 'webhookSecret');
+    await this.loadStoredProperty('webhookSecret', () => getGitHubWebhookSecretStore().get());
 
     validateEventBusName(this);
     validateWebhookSecret(this);
@@ -174,7 +142,7 @@ export class ConfigDispatcher extends MatcherAwareConfig {
   async loadConfig(): Promise<void> {
     this.loadEnvVar(process.env.REPOSITORY_ALLOW_LIST, 'repositoryAllowList', []);
     this.loadEnvVar(process.env.QUEUE_SELECTION_STRATEGY, 'queueSelectionStrategy', 'first');
-    await this.loadMatcherConfig(process.env.PARAMETER_RUNNER_MATCHER_CONFIG_PATH);
+    await this.loadMatcherConfig();
 
     validateRunnerMatcherConfig(this);
     validateQueueSelectionStrategy(this);

@@ -7,19 +7,18 @@ locals {
   primary_app_key_base64 = coalesce(var.github_app.key_base64_ssm, module.ssm.parameters.github_app_key_base64)
 
   github_app_parameters = {
-    id = concat(
-      [local.primary_app_id],
-      [for p in module.ssm.additional_app_parameters : p.id]
-    )
-    key_base64 = concat(
-      [local.primary_app_key_base64],
-      [for p in module.ssm.additional_app_parameters : p.key_base64]
-    )
-    installation_id = concat(
-      [null],
-      [for p in module.ssm.additional_app_parameters : p.installation_id]
-    )
+    id             = local.primary_app_id
+    key_base64     = local.primary_app_key_base64
     webhook_secret = coalesce(var.github_app.webhook_secret_ssm, module.ssm.parameters.github_app_webhook_secret)
+    # Additional apps flow to the lambdas through the manifest parameter so
+    # the lambda environment size stays constant regardless of app count.
+    additional_apps_manifest = module.ssm.additional_apps_manifest
+    additional_app_parameter_arns = flatten([
+      for p in module.ssm.additional_app_parameters : concat(
+        [p.id.arn, p.key_base64.arn],
+        p.installation_id != null ? [p.installation_id.arn] : []
+      )
+    ])
   }
 
   default_runner_labels = distinct(concat(["self-hosted", var.runner_os, var.runner_architecture]))
@@ -101,7 +100,7 @@ resource "aws_sqs_queue" "queued_builds_dlq" {
 }
 
 module "ssm" {
-  source                 = "./modules/ssm"
+  source                 = "./modules/storage-providers/aws/ssm"
   kms_key_arn            = var.kms_key_arn
   path_prefix            = "${local.ssm_root_path}/${var.ssm_paths.app}"
   github_app             = var.github_app
@@ -112,13 +111,19 @@ module "ssm" {
 module "webhook" {
   source = "./modules/webhook"
 
-  ssm_paths = {
-    root    = local.ssm_root_path
-    webhook = var.ssm_paths.webhook
+  storage_provider = {
+    aws = {
+      kms_key_id = var.kms_key_arn
+      ssm = {
+        paths = {
+          root    = local.ssm_root_path
+          webhook = var.ssm_paths.webhook
+        }
+      }
+    }
   }
   prefix      = var.prefix
   tags        = local.tags
-  kms_key_arn = var.kms_key_arn
   eventbridge = var.eventbridge
 
   runner_matcher_config = {
@@ -183,6 +188,7 @@ module "runners" {
     tokens = "${var.ssm_paths.runners}/tokens"
     config = "${var.ssm_paths.runners}/config"
   }
+  ssm_ttl_seconds = var.ssm_ttl_seconds
 
   s3_runner_binaries = var.enable_runner_binaries_syncer ? {
     arn = module.runner_binaries[0].bucket.arn
@@ -190,13 +196,14 @@ module "runners" {
     key = module.runner_binaries[0].runner_distribution_object_key
   } : null
 
-  runner_os                     = var.runner_os
-  instance_types                = var.instance_types
-  instance_target_capacity_type = var.instance_target_capacity_type
-  instance_allocation_strategy  = var.instance_allocation_strategy
-  instance_type_priorities      = var.instance_type_priorities
-  instance_max_spot_price       = var.instance_max_spot_price
-  block_device_mappings         = var.block_device_mappings
+  runner_os                               = var.runner_os
+  instance_types                          = var.instance_types
+  instance_target_capacity_type           = var.instance_target_capacity_type
+  instance_capacity_type_override_enabled = var.enable_dynamic_labels
+  instance_allocation_strategy            = var.instance_allocation_strategy
+  instance_type_priorities                = var.instance_type_priorities
+  instance_max_spot_price                 = var.instance_max_spot_price
+  block_device_mappings                   = var.block_device_mappings
 
   runner_architecture = var.runner_architecture
   ami                 = var.ami
@@ -215,6 +222,7 @@ module "runners" {
   scale_down_schedule_expression       = var.scale_down_schedule_expression
   minimum_running_time_in_minutes      = var.minimum_running_time_in_minutes
   runner_boot_time_in_minutes          = var.runner_boot_time_in_minutes
+  scale_down_idle_confirmation_seconds = var.scale_down_idle_confirmation_seconds
   runner_disable_default_labels        = var.runner_disable_default_labels
   runner_labels                        = local.runner_labels
   runner_as_root                       = var.runner_as_root
@@ -261,6 +269,7 @@ module "runners" {
   scale_up_reserved_concurrent_executions = var.scale_up_reserved_concurrent_executions
 
   associate_public_ipv4_address = var.associate_public_ipv4_address
+  network_interfaces            = var.runner_network_interfaces
 
   instance_profile_path     = var.instance_profile_path
   role_path                 = var.role_path
@@ -406,8 +415,8 @@ locals {
     metrics                      = var.metrics
     enable_runner_deregistration = var.instance_termination_watcher.enable_runner_deregistration
     github_app_parameters = var.instance_termination_watcher.enable_runner_deregistration ? {
-      id         = local.github_app_parameters.id[0]
-      key_base64 = local.github_app_parameters.key_base64[0]
+      id         = local.github_app_parameters.id
+      key_base64 = local.github_app_parameters.key_base64
     } : null
     ghes_url = var.ghes_url
   }

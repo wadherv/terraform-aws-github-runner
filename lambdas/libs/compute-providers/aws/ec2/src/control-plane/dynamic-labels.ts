@@ -11,8 +11,6 @@ import {
   BurstablePerformance,
   CpuManufacturer,
   CpuPerformanceFactorRequest,
-  DescribeLaunchTemplateVersionsCommand,
-  EC2Client,
   FleetBlockDeviceMappingRequest,
   FleetEbsBlockDeviceRequest,
   InstanceGeneration,
@@ -30,11 +28,12 @@ import {
   VCpuCountRangeRequest,
   VolumeType,
 } from '@aws-sdk/client-ec2';
-import { getTracedAWSV3Client } from '@aws-github-runner/aws-powertools-util';
 
-import { Ec2OverrideConfig } from './runners.d';
+import { InvalidRunnerLabelsError } from '../../../../core';
+import { Ec2OverrideConfig } from '../runners.d';
 
 const EC2_OVERRIDE_LIST_VALUE_SEPARATOR = ';';
+const CAPACITY_TYPES: string[] = ['spot', 'on-demand'];
 
 /**
  * Parses EC2 override configuration from GitHub labels.
@@ -43,6 +42,7 @@ const EC2_OVERRIDE_LIST_VALUE_SEPARATOR = ';';
  *
  * Basic Fleet Overrides:
  * - ghr-ec2-instance-type:<type>              - Set specific instance type (e.g., c5.xlarge)
+ * - ghr-ec2-capacity-type:<type>              - Set capacity type (spot or on-demand)
  * - ghr-ec2-max-price:<price>                 - Set maximum spot price
  * - ghr-ec2-subnet-id:<id>                    - Set subnet ID
  * - ghr-ec2-availability-zone:<zone>          - Set availability zone
@@ -150,6 +150,8 @@ export function parseEc2OverrideConfig(
       config.AvailabilityZone = value;
     } else if (key === 'availability-zone-id') {
       config.AvailabilityZoneId = value;
+    } else if (key === 'capacity-type') {
+      config.TargetCapacityType = value.toLowerCase() as Ec2OverrideConfig['TargetCapacityType'];
     } else if (key === 'max-price') {
       config.MaxPrice = value;
     } else if (key === 'priority') {
@@ -336,6 +338,18 @@ export function parseEc2OverrideConfig(
   return Object.keys(config).length > 0 ? config : undefined;
 }
 
+export function validateEc2OverrideConfig(config: Ec2OverrideConfig): void {
+  if (config.InstanceType && config.InstanceRequirements) {
+    throw new InvalidRunnerLabelsError('InstanceType and InstanceRequirements cannot be used together');
+  }
+
+  if (config.TargetCapacityType !== undefined && !CAPACITY_TYPES.includes(config.TargetCapacityType)) {
+    throw new InvalidRunnerLabelsError(
+      `Invalid capacity type '${config.TargetCapacityType}', expected one of: ${CAPACITY_TYPES.join(', ')}`,
+    );
+  }
+}
+
 function splitEc2OverrideListValue(value: string): string[] {
   return value.split(EC2_OVERRIDE_LIST_VALUE_SEPARATOR);
 }
@@ -364,25 +378,4 @@ export function shouldLoadLaunchTemplateBlockDeviceName(labels: string[]): boole
   }
 
   return hasBlockDeviceOverride && !hasBlockDeviceName;
-}
-
-export async function getDefaultBlockDeviceNameFromLaunchTemplate(launchTemplateName: string): Promise<string> {
-  const ec2Client = getTracedAWSV3Client(new EC2Client({ region: process.env.AWS_REGION }));
-  const launchTemplateVersions = await ec2Client.send(
-    new DescribeLaunchTemplateVersionsCommand({
-      LaunchTemplateName: launchTemplateName,
-      Versions: ['$Default'],
-    }),
-  );
-  const blockDeviceMappings =
-    launchTemplateVersions.LaunchTemplateVersions?.[0]?.LaunchTemplateData?.BlockDeviceMappings;
-  const blockDeviceName =
-    blockDeviceMappings?.find((blockDeviceMapping) => blockDeviceMapping.DeviceName && blockDeviceMapping.Ebs)
-      ?.DeviceName ?? blockDeviceMappings?.find((blockDeviceMapping) => blockDeviceMapping.DeviceName)?.DeviceName;
-
-  if (!blockDeviceName) {
-    throw new Error(`Failed to determine block device name from launch template '${launchTemplateName}'.`);
-  }
-
-  return blockDeviceName;
 }
