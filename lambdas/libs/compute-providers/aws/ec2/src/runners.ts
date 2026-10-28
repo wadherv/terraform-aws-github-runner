@@ -71,7 +71,10 @@ export function createEc2RunnerClient(ec2Client: EC2Client): Ec2RunnerClient {
         runWithRequestSignal(signal, async () => {
           const page = await ec2Client.send(
             new DescribeInstancesCommand({
-              Filters: constructFilters({ environment })[0],
+              Filters: [
+                { Name: 'instance-state-name', Values: ['running', 'pending'] },
+                ...constructTagFilters({ environment }),
+              ],
               NextToken: nextToken,
               MaxResults: 100,
             }),
